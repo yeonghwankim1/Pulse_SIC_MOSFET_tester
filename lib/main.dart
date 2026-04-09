@@ -45,12 +45,37 @@ class _PulseTesterPageState extends State<PulseTesterPage> {
   late final TextEditingController _onTime;
   late final TextEditingController _offTime;
   late final TextEditingController _duty;
+  final List<String> _resources = <String>[];
+  final Map<String, String> _resourceToDeviceName = <String, String>{};
+  String _drainResource = '';
+  String _gateResource = '';
+  String _pulseGeneratorResource = '';
+  String _pulseScopeResource = '';
+  String _pulseCurrentResource = '';
 
-  TestInstrument _instrument = TestInstrument.afg2225;
-  CommTransport _transport = CommTransport.serial;
-  ConnectionStateView _connection = ConnectionStateView.idle;
-  String _detail = 'No handshake has been run yet.';
+  TestInstrument _drainInstrument = TestInstrument.afg2225;
+  TestInstrument _gateInstrument = TestInstrument.afg2225;
+  TestInstrument _pulseGeneratorInstrument = TestInstrument.afg2225;
+  TestInstrument _pulseScopeInstrument = TestInstrument.oscilloscope;
+  TestInstrument _pulseCurrentInstrument = TestInstrument.currentMeter;
+  CommTransport _drainTransport = CommTransport.serial;
+  CommTransport _gateTransport = CommTransport.serial;
+  CommTransport _pulseGeneratorTransport = CommTransport.serial;
+  CommTransport _pulseScopeTransport = CommTransport.visa;
+  CommTransport _pulseCurrentTransport = CommTransport.visa;
+  ConnectionStateView _drainConnection = ConnectionStateView.idle;
+  ConnectionStateView _gateConnection = ConnectionStateView.idle;
+  ConnectionStateView _pulseGeneratorConnection = ConnectionStateView.idle;
+  ConnectionStateView _pulseScopeConnection = ConnectionStateView.idle;
+  ConnectionStateView _pulseCurrentConnection = ConnectionStateView.idle;
+  String _drainDetail = 'No handshake has been run yet.';
+  String _gateDetail = 'No handshake has been run yet.';
+  String _pulseGeneratorDetail = 'No handshake has been run yet.';
+  String _pulseScopeDetail = 'No handshake has been run yet.';
+  String _pulseCurrentDetail = 'No handshake has been run yet.';
+  GateMeasurementMode _gateMeasurementMode = GateMeasurementMode.dc;
   bool _running = false;
+  bool _loadingResources = false;
   Timer? _logPoller;
 
   @override
@@ -82,7 +107,173 @@ class _PulseTesterPageState extends State<PulseTesterPage> {
     super.dispose();
   }
 
-  bool get _canControl => _instrument == TestInstrument.afg2225;
+  bool _canControl(DeviceRole role) {
+    final transport = _transportFor(role);
+    final instrument = _instrumentFor(role);
+    return transport == CommTransport.visa || instrument == TestInstrument.afg2225;
+  }
+
+  List<TestInstrument> _availableInstrumentsFor(CommTransport transport) {
+    return TestInstrument.values
+        .where((instrument) => instrument.supportedTransports.contains(transport))
+        .toList();
+  }
+
+  CommTransport _transportFor(DeviceRole role) {
+    return role == DeviceRole.drain ? _drainTransport : _gateTransport;
+  }
+
+  TestInstrument _instrumentFor(DeviceRole role) {
+    return role == DeviceRole.drain ? _drainInstrument : _gateInstrument;
+  }
+
+  ConnectionStateView _connectionFor(DeviceRole role) {
+    return role == DeviceRole.drain ? _drainConnection : _gateConnection;
+  }
+
+  String _detailFor(DeviceRole role) {
+    return role == DeviceRole.drain ? _drainDetail : _gateDetail;
+  }
+
+  String _targetFor(DeviceRole role) {
+    final transport = _transportFor(role);
+    if (transport == CommTransport.visa) {
+      return role == DeviceRole.drain ? _drainResource : _gateResource;
+    }
+    return role == DeviceRole.drain ? _port.text.trim() : _port.text.trim();
+  }
+
+  void _setTransport(DeviceRole role, CommTransport value) {
+    if (role == DeviceRole.drain) {
+      _drainTransport = value;
+    } else {
+      _gateTransport = value;
+    }
+  }
+
+  void _setInstrument(DeviceRole role, TestInstrument value) {
+    if (role == DeviceRole.drain) {
+      _drainInstrument = value;
+    } else {
+      _gateInstrument = value;
+    }
+  }
+
+  void _setConnection(DeviceRole role, ConnectionStateView value) {
+    if (role == DeviceRole.drain) {
+      _drainConnection = value;
+    } else {
+      _gateConnection = value;
+    }
+  }
+
+  void _setDetail(DeviceRole role, String value) {
+    if (role == DeviceRole.drain) {
+      _drainDetail = value;
+    } else {
+      _gateDetail = value;
+    }
+  }
+
+  CommTransport _pulseTransportFor(PulseDeviceRole role) {
+    switch (role) {
+      case PulseDeviceRole.generator:
+        return _pulseGeneratorTransport;
+      case PulseDeviceRole.oscilloscope:
+        return _pulseScopeTransport;
+      case PulseDeviceRole.current:
+        return _pulseCurrentTransport;
+    }
+  }
+
+  TestInstrument _pulseInstrumentFor(PulseDeviceRole role) {
+    switch (role) {
+      case PulseDeviceRole.generator:
+        return _pulseGeneratorInstrument;
+      case PulseDeviceRole.oscilloscope:
+        return _pulseScopeInstrument;
+      case PulseDeviceRole.current:
+        return _pulseCurrentInstrument;
+    }
+  }
+
+  ConnectionStateView _pulseConnectionFor(PulseDeviceRole role) {
+    switch (role) {
+      case PulseDeviceRole.generator:
+        return _pulseGeneratorConnection;
+      case PulseDeviceRole.oscilloscope:
+        return _pulseScopeConnection;
+      case PulseDeviceRole.current:
+        return _pulseCurrentConnection;
+    }
+  }
+
+  String _pulseDetailFor(PulseDeviceRole role) {
+    switch (role) {
+      case PulseDeviceRole.generator:
+        return _pulseGeneratorDetail;
+      case PulseDeviceRole.oscilloscope:
+        return _pulseScopeDetail;
+      case PulseDeviceRole.current:
+        return _pulseCurrentDetail;
+    }
+  }
+
+  void _setPulseTransport(PulseDeviceRole role, CommTransport value) {
+    switch (role) {
+      case PulseDeviceRole.generator:
+        _pulseGeneratorTransport = value;
+        return;
+      case PulseDeviceRole.oscilloscope:
+        _pulseScopeTransport = value;
+        return;
+      case PulseDeviceRole.current:
+        _pulseCurrentTransport = value;
+        return;
+    }
+  }
+
+  void _setPulseInstrument(PulseDeviceRole role, TestInstrument value) {
+    switch (role) {
+      case PulseDeviceRole.generator:
+        _pulseGeneratorInstrument = value;
+        return;
+      case PulseDeviceRole.oscilloscope:
+        _pulseScopeInstrument = value;
+        return;
+      case PulseDeviceRole.current:
+        _pulseCurrentInstrument = value;
+        return;
+    }
+  }
+
+  void _setPulseConnection(PulseDeviceRole role, ConnectionStateView value) {
+    switch (role) {
+      case PulseDeviceRole.generator:
+        _pulseGeneratorConnection = value;
+        return;
+      case PulseDeviceRole.oscilloscope:
+        _pulseScopeConnection = value;
+        return;
+      case PulseDeviceRole.current:
+        _pulseCurrentConnection = value;
+        return;
+    }
+  }
+
+  void _setPulseDetail(PulseDeviceRole role, String value) {
+    switch (role) {
+      case PulseDeviceRole.generator:
+        _pulseGeneratorDetail = value;
+        return;
+      case PulseDeviceRole.oscilloscope:
+        _pulseScopeDetail = value;
+        return;
+      case PulseDeviceRole.current:
+        _pulseCurrentDetail = value;
+        return;
+    }
+  }
 
   PulseTestConfig? get _preview {
     try {
@@ -93,9 +284,15 @@ class _PulseTesterPageState extends State<PulseTesterPage> {
   }
 
   PulseTestConfig _readConfig() {
+    final activeTransport = _gateMeasurementMode == GateMeasurementMode.pulse
+        ? _pulseGeneratorTransport
+        : _gateTransport;
+    final activeTarget = _gateMeasurementMode == GateMeasurementMode.pulse
+        ? _pulseTargetFor(PulseDeviceRole.generator)
+        : _port.text.trim();
     final config = PulseTestConfig(
-      port: _port.text.trim(),
-      transport: _transport,
+      port: activeTarget,
+      transport: activeTransport,
       periodUs: _num(_periodUs.text, 'Period'),
       voltageStart: _num(_vStart.text, 'Voltage start'),
       voltageEnd: _num(_vEnd.text, 'Voltage end'),
@@ -137,7 +334,28 @@ class _PulseTesterPageState extends State<PulseTesterPage> {
   void _reset() {
     final d = PulseTestConfig.defaults;
     setState(() {
-      _port.text = _transport.defaultTarget(_instrument);
+      _drainTransport = CommTransport.serial;
+      _gateTransport = d.transport;
+      _pulseGeneratorTransport = CommTransport.serial;
+      _pulseScopeTransport = CommTransport.visa;
+      _pulseCurrentTransport = CommTransport.visa;
+      _drainInstrument = TestInstrument.afg2225;
+      _gateInstrument = TestInstrument.afg2225;
+      _pulseGeneratorInstrument = TestInstrument.afg2225;
+      _pulseScopeInstrument = TestInstrument.oscilloscope;
+      _pulseCurrentInstrument = TestInstrument.currentMeter;
+      _port.text = d.port;
+      _drainConnection = ConnectionStateView.idle;
+      _gateConnection = ConnectionStateView.idle;
+      _pulseGeneratorConnection = ConnectionStateView.idle;
+      _pulseScopeConnection = ConnectionStateView.idle;
+      _pulseCurrentConnection = ConnectionStateView.idle;
+      _drainDetail = 'Defaults restored.';
+      _gateDetail = 'Defaults restored.';
+      _pulseGeneratorDetail = 'Defaults restored.';
+      _pulseScopeDetail = 'Defaults restored.';
+      _pulseCurrentDetail = 'Defaults restored.';
+      _gateMeasurementMode = GateMeasurementMode.dc;
       _periodUs.text = '${d.periodUs}';
       _vStart.text = '${d.voltageStart}';
       _vEnd.text = '${d.voltageEnd}';
@@ -145,46 +363,53 @@ class _PulseTesterPageState extends State<PulseTesterPage> {
       _onTime.text = '${d.onTimeSeconds}';
       _offTime.text = '${d.offTimeSeconds}';
       _duty.text = '${d.dutyRatio}';
-      _connection = ConnectionStateView.idle;
-      _detail = 'Defaults restored.';
+      _syncVisaSelections(preserveExisting: true);
     });
   }
 
-  Future<void> _checkConnection() async {
-    if (!_canControl) {
+  Future<void> _checkConnection(DeviceRole role) async {
+    final transport = _transportFor(role);
+    if (!_canControl(role)) {
       _message('This instrument driver is not implemented yet.');
       return;
     }
-    final target = _port.text.trim();
+    final target = _targetFor(role);
     if (target.isEmpty) {
-      _message('${_transport.targetLabel} is required.');
+      _message('${transport.targetLabel} is required.');
       return;
     }
     setState(() {
-      _connection = ConnectionStateView.checking;
-      _detail = 'Running *IDN? handshake on $target via ${_transport.label}';
+      _setConnection(role, ConnectionStateView.checking);
+      _setDetail(role, 'Running *IDN? handshake on $target via ${transport.label}');
     });
     try {
-      final result = await _bridge.identify(target: target, transport: _transport);
+      final result = await _bridge.identify(target: target, transport: transport);
       _appendBridgeLogs(result.logs);
       if (!mounted) {
         return;
       }
       setState(() {
-        _connection = result.success ? ConnectionStateView.connected : ConnectionStateView.failed;
-        _detail = result.summary;
+        _setConnection(
+          role,
+          result.success ? ConnectionStateView.connected : ConnectionStateView.failed,
+        );
+        _setDetail(role, result.summary);
       });
     } catch (error) {
       setState(() {
-        _connection = ConnectionStateView.failed;
-        _detail = 'Handshake failed: $error';
+        _setConnection(role, ConnectionStateView.failed);
+        _setDetail(role, 'Handshake failed: $error');
       });
-      _log(LogEntry.error('Connection check failed: $error'));
+      _log(LogEntry.error('${role.label} connection check failed: $error'));
     }
   }
 
   Future<void> _startRun() async {
-    if (!_canControl) {
+    final canRun = _gateMeasurementMode == GateMeasurementMode.pulse
+        ? (_pulseGeneratorTransport == CommTransport.visa ||
+            _pulseGeneratorInstrument == TestInstrument.afg2225)
+        : _canControl(DeviceRole.gate);
+    if (!canRun) {
       _message('This instrument driver is not implemented yet.');
       return;
     }
@@ -196,8 +421,8 @@ class _PulseTesterPageState extends State<PulseTesterPage> {
       setState(() {
         _logs.clear();
         _running = true;
-        _connection = ConnectionStateView.connected;
-        _detail = 'Sweep started.';
+        _gateConnection = ConnectionStateView.connected;
+        _gateDetail = 'Sweep started.';
       });
       final result = await _bridge.startSweep(config: config);
       _appendBridgeLogs(result.logs);
@@ -205,10 +430,10 @@ class _PulseTesterPageState extends State<PulseTesterPage> {
         return;
       }
       setState(() {
-        _detail = result.summary;
+        _gateDetail = result.summary;
         if (!result.success) {
           _running = false;
-          _connection = ConnectionStateView.failed;
+          _gateConnection = ConnectionStateView.failed;
         }
       });
       if (result.success) {
@@ -223,7 +448,7 @@ class _PulseTesterPageState extends State<PulseTesterPage> {
       if (mounted) {
         setState(() {
           _running = false;
-          _connection = ConnectionStateView.failed;
+          _gateConnection = ConnectionStateView.failed;
         });
       }
       _log(LogEntry.error('Run failed: $error'));
@@ -235,7 +460,7 @@ class _PulseTesterPageState extends State<PulseTesterPage> {
     _bridge.stopSweep();
     _log(LogEntry.warning('Stop requested. Waiting for hardware output off.'));
     setState(() {
-      _detail = 'Stop requested.';
+      _gateDetail = 'Stop requested.';
     });
   }
 
@@ -248,8 +473,8 @@ class _PulseTesterPageState extends State<PulseTesterPage> {
         _logPoller?.cancel();
         setState(() {
           _running = false;
-          if (_detail == 'Sweep started.') {
-            _detail = 'Sweep finished.';
+          if (_gateDetail == 'Sweep started.') {
+            _gateDetail = 'Sweep finished.';
           }
         });
       }
@@ -266,29 +491,332 @@ class _PulseTesterPageState extends State<PulseTesterPage> {
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(text)));
   }
 
+  void _syncVisaSelections({bool preserveExisting = true}) {
+    final resources = _resources;
+    if (resources.isEmpty) {
+      _drainResource = '';
+      _gateResource = '';
+      _pulseGeneratorResource = '';
+      _pulseScopeResource = '';
+      _pulseCurrentResource = '';
+      _port.text = '';
+      return;
+    }
+
+    if (!preserveExisting || !resources.contains(_drainResource)) {
+      _drainResource = resources.first;
+    }
+
+    if (!preserveExisting || !resources.contains(_gateResource)) {
+      _gateResource =
+          resources.length >= 2 ? resources[1] : resources.first;
+    }
+
+    if (!preserveExisting || !resources.contains(_pulseGeneratorResource)) {
+      _pulseGeneratorResource = resources.first;
+    }
+
+    if (!preserveExisting || !resources.contains(_pulseScopeResource)) {
+      _pulseScopeResource = resources.length >= 2 ? resources[1] : resources.first;
+    }
+
+    if (!preserveExisting || !resources.contains(_pulseCurrentResource)) {
+      _pulseCurrentResource = resources.length >= 3 ? resources[2] : resources.last;
+    }
+
+    _port.text = _gateResource;
+  }
+
+  String _resourceLabel(String resource) {
+    final name = _resourceToDeviceName[resource];
+    if (name == null || name.isEmpty || name == resource) {
+      return resource;
+    }
+    return '$name ($resource)';
+  }
+
+  String _resourceShortLabel(String resource) {
+    final name = _resourceToDeviceName[resource];
+    if (name == null || name.isEmpty || name == resource) {
+      return resource;
+    }
+    return name;
+  }
+
+  String _transportSelectionLabel(CommTransport transport) {
+    switch (transport) {
+      case CommTransport.visa:
+        return 'VISA Resource';
+      case CommTransport.serial:
+        return 'Target Instrument';
+      case CommTransport.tcp:
+        return 'Target Instrument';
+    }
+  }
+
+  String _instrumentDescription(DeviceRole role) {
+    final instrument = _instrumentFor(role);
+    final transport = _transportFor(role);
+    if (instrument == TestInstrument.afg2225) {
+      switch (transport) {
+        case CommTransport.serial:
+          return 'Connected through the Windows native serial driver.';
+        case CommTransport.visa:
+          return 'Connected through the Windows native VISA driver.';
+        case CommTransport.tcp:
+          return instrument.description;
+      }
+    }
+    return instrument.description;
+  }
+
+  String _connectionHint(DeviceRole role) {
+    final instrument = _instrumentFor(role);
+    final transport = _transportFor(role);
+    if (instrument == TestInstrument.afg2225) {
+      switch (transport) {
+        case CommTransport.serial:
+          return 'SCPI *IDN? over serial';
+        case CommTransport.visa:
+          return 'SCPI *IDN? over VISA';
+        case CommTransport.tcp:
+          return instrument.connectionHint;
+      }
+    }
+    return instrument.connectionHint;
+  }
+
+  String _defaultTargetFor(DeviceRole role) {
+    final transport = _transportFor(role);
+    final instrument = _instrumentFor(role);
+    if (transport == CommTransport.visa) {
+      return role == DeviceRole.drain ? _drainResource : _gateResource;
+    }
+    return transport.defaultTarget(instrument);
+  }
+
+  String _pulseTargetFor(PulseDeviceRole role) {
+    final transport = _pulseTransportFor(role);
+    if (transport == CommTransport.visa) {
+      switch (role) {
+        case PulseDeviceRole.generator:
+          return _pulseGeneratorResource;
+        case PulseDeviceRole.oscilloscope:
+          return _pulseScopeResource;
+        case PulseDeviceRole.current:
+          return _pulseCurrentResource;
+      }
+    }
+    if (role == PulseDeviceRole.generator) {
+      return _port.text.trim();
+    }
+    return transport.defaultTarget(_pulseInstrumentFor(role));
+  }
+
+  void _onTransportChanged(DeviceRole role, CommTransport? value) {
+    if (value == null) {
+      return;
+    }
+    setState(() {
+      _setTransport(role, value);
+      final available = _availableInstrumentsFor(value);
+      if (!available.contains(_instrumentFor(role)) && available.isNotEmpty) {
+        _setInstrument(role, available.first);
+      }
+      if (value == CommTransport.visa) {
+        _syncVisaSelections(preserveExisting: true);
+      } else if (role == DeviceRole.gate) {
+        _port.text = value.defaultTarget(_instrumentFor(role));
+      }
+      _setConnection(role, ConnectionStateView.idle);
+      _setDetail(role, 'Transport changed to ${value.label}');
+    });
+    if (value == CommTransport.visa && _resources.isEmpty) {
+      unawaited(_listResources());
+    }
+  }
+
+  void _onInstrumentChanged(DeviceRole role, TestInstrument? value) {
+    if (value == null) {
+      return;
+    }
+    setState(() {
+      _setInstrument(role, value);
+      if (_transportFor(role) != CommTransport.visa && role == DeviceRole.gate) {
+        _port.text = _transportFor(role).defaultTarget(value);
+      }
+      _setConnection(role, ConnectionStateView.idle);
+      _setDetail(role, 'Selected ${value.label}');
+    });
+  }
+
+  void _onPulseTransportChanged(PulseDeviceRole role, CommTransport? value) {
+    if (value == null) {
+      return;
+    }
+    setState(() {
+      _setPulseTransport(role, value);
+      final available = _availableInstrumentsFor(value);
+      if (!available.contains(_pulseInstrumentFor(role)) && available.isNotEmpty) {
+        _setPulseInstrument(role, available.first);
+      }
+      if (value == CommTransport.visa) {
+        _syncVisaSelections(preserveExisting: true);
+      } else if (role == PulseDeviceRole.generator) {
+        _port.text = value.defaultTarget(_pulseInstrumentFor(role));
+      }
+      _setPulseConnection(role, ConnectionStateView.idle);
+      _setPulseDetail(role, 'Transport changed to ${value.label}');
+    });
+    if (value == CommTransport.visa && _resources.isEmpty) {
+      unawaited(_listResources());
+    }
+  }
+
+  void _onPulseInstrumentChanged(PulseDeviceRole role, TestInstrument? value) {
+    if (value == null) {
+      return;
+    }
+    setState(() {
+      _setPulseInstrument(role, value);
+      if (_pulseTransportFor(role) != CommTransport.visa &&
+          role == PulseDeviceRole.generator) {
+        _port.text = _pulseTransportFor(role).defaultTarget(value);
+      }
+      _setPulseConnection(role, ConnectionStateView.idle);
+      _setPulseDetail(role, 'Selected ${value.label}');
+    });
+  }
+
+  String _activeGateInstrumentLabel() {
+    if (_gateMeasurementMode == GateMeasurementMode.pulse) {
+      return _pulseGeneratorInstrument.label;
+    }
+    return _gateInstrument.label;
+  }
+
+  Future<void> _checkPulseConnection(PulseDeviceRole role) async {
+    final transport = _pulseTransportFor(role);
+    final instrument = _pulseInstrumentFor(role);
+    final target = _pulseTargetFor(role);
+    final canControl = transport == CommTransport.visa || instrument == TestInstrument.afg2225;
+    if (!canControl) {
+      _message('This instrument driver is not implemented yet.');
+      return;
+    }
+    if (target.isEmpty) {
+      _message('${transport.targetLabel} is required.');
+      return;
+    }
+    setState(() {
+      _setPulseConnection(role, ConnectionStateView.checking);
+      _setPulseDetail(role, 'Running *IDN? handshake on $target via ${transport.label}');
+    });
+    try {
+      final result = await _bridge.identify(target: target, transport: transport);
+      _appendBridgeLogs(result.logs);
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _setPulseConnection(
+          role,
+          result.success ? ConnectionStateView.connected : ConnectionStateView.failed,
+        );
+        _setPulseDetail(role, result.summary);
+      });
+    } catch (error) {
+      setState(() {
+        _setPulseConnection(role, ConnectionStateView.failed);
+        _setPulseDetail(role, 'Handshake failed: $error');
+      });
+      _log(LogEntry.error('${role.label} connection check failed: $error'));
+    }
+  }
+
+  String _extractDeviceName(String idn) {
+    final parts = idn.split(',');
+    if (parts.length >= 2) {
+      final maker = parts[0].trim();
+      final model = parts[1].trim();
+      if (maker.isNotEmpty && model.isNotEmpty) {
+        return '$maker $model';
+      }
+      if (model.isNotEmpty) {
+        return model;
+      }
+    }
+    return idn.trim();
+  }
+
+  Future<void> _listResources() async {
+    setState(() {
+      _loadingResources = true;
+    });
+    try {
+      final resources = await _bridge.listResources();
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _resources
+          ..clear()
+          ..addAll(resources);
+        _resourceToDeviceName
+          ..clear()
+          ..addEntries(resources.map((resource) => MapEntry(resource, resource)));
+        _syncVisaSelections(preserveExisting: true);
+        _loadingResources = false;
+      });
+      _log(LogEntry.info('Found ${resources.length} VISA resource(s).'));
+      unawaited(_resolveResourceNames(resources));
+    } catch (error) {
+      _log(LogEntry.error('VISA resource scan failed: $error'));
+      _message('VISA resource scan failed: $error');
+      if (mounted) {
+        setState(() {
+          _loadingResources = false;
+        });
+      }
+    }
+  }
+
+  Future<void> _resolveResourceNames(List<String> resources) async {
+    for (final resource in resources) {
+      try {
+        final idn = await _bridge.queryIdn(resource: resource);
+        if (!mounted) {
+          return;
+        }
+        setState(() {
+          _resourceToDeviceName[resource] = _extractDeviceName(idn);
+        });
+      } catch (_) {}
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
-    final preview = _preview;
-    final steps = preview == null ? <double>[] : preview.buildVoltagePoints();
-    final frequency = preview?.frequencyHz ?? 0.0;
-    final dutyPercent = preview?.dutyPercent ?? 0.0;
-    final seconds = preview == null ? 0.0 : steps.length.toDouble() * (preview.onTimeSeconds + preview.offTimeSeconds);
-
     return Scaffold(
       appBar: AppBar(title: const Text('SiC MOSFET Pulse Tester')),
       body: LayoutBuilder(
         builder: (context, c) {
-          final left = Column(children: [_instrumentCard(), const SizedBox(height: 20), _setupCard()]);
-          final right = _statusColumn(frequency, dutyPercent, steps.length, seconds);
+          final content = c.maxWidth >= 1100
+              ? Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                  Expanded(flex: 5, child: _setupCard()),
+                  const SizedBox(width: 20),
+                  Expanded(flex: 4, child: _logCard()),
+                ])
+              : Column(children: [_setupCard(), const SizedBox(height: 20), _logCard()]);
           return SingleChildScrollView(
             padding: const EdgeInsets.all(20),
-            child: c.maxWidth >= 1100
-                ? Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                    Expanded(flex: 5, child: left),
-                    const SizedBox(width: 20),
-                    Expanded(flex: 4, child: right),
-                  ])
-                : Column(children: [left, const SizedBox(height: 20), right]),
+            child: Column(
+              children: [
+                _instrumentCard(),
+                const SizedBox(height: 20),
+                content,
+              ],
+            ),
           );
         },
       ),
@@ -296,99 +824,443 @@ class _PulseTesterPageState extends State<PulseTesterPage> {
   }
 
   Widget _instrumentCard() {
-    final status = _connection.presentation;
     return Card(
       elevation: 0,
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
       child: Padding(
-        padding: const EdgeInsets.all(20),
+        padding: const EdgeInsets.all(14),
         child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
           Text('Instrument Selection', style: Theme.of(context).textTheme.headlineSmall),
           const SizedBox(height: 8),
           Text('Run a real connection check before starting the sweep.', style: Theme.of(context).textTheme.bodyMedium),
-          const SizedBox(height: 20),
-          Wrap(spacing: 16, runSpacing: 16, crossAxisAlignment: WrapCrossAlignment.center, children: [
-            SizedBox(
-              width: 220,
-              child: DropdownButtonFormField<CommTransport>(
-                initialValue: _transport,
-                decoration: InputDecoration(
-                  labelText: 'Transport',
-                  border: OutlineInputBorder(borderRadius: BorderRadius.circular(16)),
-                ),
-                items: CommTransport.values
-                    .map((v) => DropdownMenuItem<CommTransport>(value: v, child: Text(v.label)))
-                    .toList(),
-                onChanged: _running
-                    ? null
-                    : (v) {
-                        if (v == null) {
-                          return;
-                        }
-                        setState(() {
-                          _transport = v;
-                          _port.text = v.defaultTarget(_instrument);
-                          _connection = ConnectionStateView.idle;
-                          _detail = 'Transport changed to ${v.label}';
-                        });
-                      },
-              ),
-            ),
-            SizedBox(
-              width: 320,
-              child: DropdownButtonFormField<TestInstrument>(
-                initialValue: _instrument,
-                decoration: InputDecoration(
-                  labelText: 'Target Instrument',
-                  border: OutlineInputBorder(borderRadius: BorderRadius.circular(16)),
-                ),
-                items: TestInstrument.values
-                    .map((v) => DropdownMenuItem<TestInstrument>(value: v, child: Text(v.label)))
-                    .toList(),
-                onChanged: _running
-                    ? null
-                    : (v) {
-                        if (v == null) {
-                          return;
-                        }
-                        setState(() {
-                          _instrument = v;
-                          _port.text = _transport.defaultTarget(v);
-                          _connection = ConnectionStateView.idle;
-                          _detail = 'Selected ${v.label}';
-                        });
-                      },
-              ),
-            ),
-            FilledButton.icon(
-              onPressed: _running ? null : _checkConnection,
-              icon: const Icon(Icons.usb_rounded),
-              label: const Text('Check Connection'),
-            ),
-            Chip(
-              avatar: Icon(status.icon, size: 18, color: status.color),
-              label: Text(status.label),
-              side: BorderSide(color: status.color.withAlpha(90)),
-            ),
-          ]),
-          const SizedBox(height: 16),
-          Container(
-            width: double.infinity,
-            padding: const EdgeInsets.all(16),
-            decoration: BoxDecoration(color: const Color(0xFFEAF5F0), borderRadius: BorderRadius.circular(18)),
-            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              Text(_instrument.label, style: Theme.of(context).textTheme.titleMedium),
-              const SizedBox(height: 6),
-              Text(_instrument.description),
-              const SizedBox(height: 8),
-              Text('Transport: ${_transport.label}'),
-              Text('${_transport.targetLabel}: ${_transport.defaultTarget(_instrument)}'),
-              Text('Connection Check: ${_instrument.connectionHint}'),
-              Text('Status Detail: $_detail'),
-            ]),
+          const SizedBox(height: 14),
+          LayoutBuilder(
+            builder: (context, constraints) {
+              if (constraints.maxWidth >= 900) {
+                return Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Expanded(flex: 4, child: _channelSection(DeviceRole.drain)),
+                    const SizedBox(width: 12),
+                    Expanded(flex: 6, child: _channelSection(DeviceRole.gate)),
+                  ],
+                );
+              }
+              return Column(
+                children: [
+                  _channelSection(DeviceRole.drain),
+                  const SizedBox(height: 12),
+                  _channelSection(DeviceRole.gate),
+                ],
+              );
+            },
           ),
         ]),
       ),
+    );
+  }
+
+  Widget _channelSection(DeviceRole role) {
+    final transport = _transportFor(role);
+    final instrument = _instrumentFor(role);
+    final connection = _connectionFor(role).presentation;
+    final detail = _detailFor(role);
+    final transportWidth = role == DeviceRole.drain ? 145.0 : 145.0;
+    final targetWidth = role == DeviceRole.drain ? 210.0 : 250.0;
+    final checkButtonStyle = switch (connection) {
+      ConnectionStateView.connected => FilledButton.styleFrom(
+          backgroundColor: const Color(0xFF2563EB),
+          foregroundColor: Colors.white,
+          visualDensity: VisualDensity.compact,
+        ),
+      ConnectionStateView.failed => FilledButton.styleFrom(
+          backgroundColor: const Color(0xFFB42318),
+          foregroundColor: Colors.white,
+          visualDensity: VisualDensity.compact,
+        ),
+      _ => FilledButton.styleFrom(
+          visualDensity: VisualDensity.compact,
+        ),
+    };
+
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: const Color(0xFFD7E2DB)),
+      ),
+      child: Theme(
+        data: Theme.of(context).copyWith(
+          textTheme: Theme.of(context).textTheme.apply(fontSizeFactor: 0.9),
+          inputDecorationTheme: const InputDecorationTheme(
+            isDense: true,
+            contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+          ),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              role.label,
+              style: Theme.of(context).textTheme.titleMedium?.copyWith(fontSize: 15),
+            ),
+            if (role == DeviceRole.gate) ...[
+              const SizedBox(height: 8),
+              Wrap(
+                spacing: 8,
+                children: GateMeasurementMode.values
+                    .map(
+                      (mode) => ChoiceChip(
+                        label: Text(mode.label),
+                        selected: _gateMeasurementMode == mode,
+                        onSelected: _running
+                            ? null
+                            : (selected) {
+                                if (!selected) {
+                                  return;
+                                }
+                                setState(() {
+                                  _gateMeasurementMode = mode;
+                                  _gateDetail = 'Gate mode changed to ${mode.label}.';
+                                });
+                              },
+                      ),
+                    )
+                    .toList(),
+              ),
+            ],
+            const SizedBox(height: 8),
+            if (role == DeviceRole.gate && _gateMeasurementMode == GateMeasurementMode.pulse)
+              _pulseModePanel()
+            else
+              Wrap(
+                spacing: role == DeviceRole.drain ? 6 : 10,
+                runSpacing: 10,
+                crossAxisAlignment: WrapCrossAlignment.center,
+                children: [
+                  SizedBox(
+                    width: transportWidth,
+                    child: DropdownButtonFormField<CommTransport>(
+                      initialValue: transport,
+                      decoration: InputDecoration(
+                        labelText: 'Transport',
+                        border: OutlineInputBorder(borderRadius: BorderRadius.circular(16)),
+                      ),
+                      items: <CommTransport>[
+                        CommTransport.serial,
+                        CommTransport.visa,
+                      ]
+                          .map((v) => DropdownMenuItem<CommTransport>(value: v, child: Text(v.label)))
+                          .toList(),
+                      onChanged: _running ? null : (value) => _onTransportChanged(role, value),
+                    ),
+                  ),
+                  SizedBox(
+                    width: targetWidth,
+                    child: transport == CommTransport.visa
+                        ? _visaResourceDropdown(role)
+                        : DropdownButtonFormField<TestInstrument>(
+                            value: instrument,
+                            decoration: InputDecoration(
+                              labelText: _transportSelectionLabel(transport),
+                              border: OutlineInputBorder(borderRadius: BorderRadius.circular(16)),
+                            ),
+                            items: _availableInstrumentsFor(transport)
+                                .map((v) => DropdownMenuItem<TestInstrument>(value: v, child: Text(v.label)))
+                                .toList(),
+                            onChanged: _running ? null : (value) => _onInstrumentChanged(role, value),
+                          ),
+                  ),
+                  FilledButton.icon(
+                    style: checkButtonStyle,
+                    onPressed: _running ? null : () => _checkConnection(role),
+                    icon: const Icon(Icons.usb_rounded, size: 18),
+                    label: const Text('Check Connection'),
+                  ),
+                  if (transport == CommTransport.visa)
+                    IconButton(
+                      onPressed: (_running || _loadingResources) ? null : _listResources,
+                      tooltip: 'Reload VISA resources',
+                      icon: _loadingResources
+                          ? const SizedBox(
+                              width: 18,
+                              height: 18,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            )
+                          : const Icon(Icons.refresh_rounded, size: 20),
+                    ),
+                  Tooltip(
+                    message: [
+                      instrument.label,
+                      _instrumentDescription(role),
+                      'Transport: ${transport.label}',
+                      '${transport.targetLabel}: ${_defaultTargetFor(role)}',
+                      'Connection Check: ${_connectionHint(role)}',
+                    ].join('\n'),
+                    waitDuration: const Duration(milliseconds: 250),
+                    child: Container(
+                      width: 24,
+                      height: 24,
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFEAF5F0),
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(color: const Color(0xFF0B6E4F).withAlpha(70)),
+                      ),
+                      child: const Center(
+                        child: Text(
+                          '?',
+                          style: TextStyle(
+                            fontSize: 13,
+                            fontWeight: FontWeight.w700,
+                            color: Color(0xFF0B6E4F),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            const SizedBox(height: 8),
+            Text('Status Detail: $detail', style: Theme.of(context).textTheme.bodySmall),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _pulseModePanel() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        if (_pulseGeneratorTransport == CommTransport.visa ||
+            _pulseScopeTransport == CommTransport.visa ||
+            _pulseCurrentTransport == CommTransport.visa)
+          Align(
+            alignment: Alignment.centerLeft,
+            child: IconButton(
+              onPressed: (_running || _loadingResources) ? null : _listResources,
+              tooltip: 'Reload VISA resources',
+              icon: _loadingResources
+                  ? const SizedBox(
+                      width: 18,
+                      height: 18,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : const Icon(Icons.refresh_rounded, size: 20),
+            ),
+          ),
+        _pulseDevicePanel(PulseDeviceRole.generator),
+        const SizedBox(height: 10),
+        _pulseDevicePanel(PulseDeviceRole.oscilloscope),
+        const SizedBox(height: 10),
+        _pulseDevicePanel(PulseDeviceRole.current),
+      ],
+    );
+  }
+
+  Widget _pulseDevicePanel(PulseDeviceRole role) {
+    final transport = _pulseTransportFor(role);
+    final instrument = _pulseInstrumentFor(role);
+    final detail = _pulseDetailFor(role);
+    final connection = _pulseConnectionFor(role);
+    final buttonStyle = switch (connection) {
+      ConnectionStateView.connected => FilledButton.styleFrom(
+          backgroundColor: const Color(0xFF2563EB),
+          foregroundColor: Colors.white,
+          visualDensity: VisualDensity.compact,
+        ),
+      ConnectionStateView.failed => FilledButton.styleFrom(
+          backgroundColor: const Color(0xFFB42318),
+          foregroundColor: Colors.white,
+          visualDensity: VisualDensity.compact,
+        ),
+      _ => FilledButton.styleFrom(visualDensity: VisualDensity.compact),
+    };
+
+    return Container(
+      padding: const EdgeInsets.all(10),
+      decoration: BoxDecoration(
+        color: const Color(0xFFF8FBF8),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: const Color(0xFFDCE8DF)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(role.label, style: Theme.of(context).textTheme.bodyMedium?.copyWith(fontWeight: FontWeight.w600)),
+          const SizedBox(height: 8),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            crossAxisAlignment: WrapCrossAlignment.center,
+            children: [
+              SizedBox(
+                width: 125,
+                child: DropdownButtonFormField<CommTransport>(
+                  initialValue: transport,
+                  decoration: InputDecoration(
+                    labelText: 'Transport',
+                    border: OutlineInputBorder(borderRadius: BorderRadius.circular(16)),
+                  ),
+                  items: <CommTransport>[CommTransport.serial, CommTransport.visa]
+                      .map((v) => DropdownMenuItem<CommTransport>(value: v, child: Text(v.label)))
+                      .toList(),
+                  onChanged: _running ? null : (value) => _onPulseTransportChanged(role, value),
+                ),
+              ),
+              SizedBox(
+                width: 230,
+                child: transport == CommTransport.visa
+                    ? _pulseVisaResourceDropdown(role)
+                    : DropdownButtonFormField<TestInstrument>(
+                        value: instrument,
+                        decoration: InputDecoration(
+                          labelText: _transportSelectionLabel(transport),
+                          border: OutlineInputBorder(borderRadius: BorderRadius.circular(16)),
+                        ),
+                        items: _availableInstrumentsFor(transport)
+                            .map((v) => DropdownMenuItem<TestInstrument>(value: v, child: Text(v.label)))
+                            .toList(),
+                        onChanged: _running ? null : (value) => _onPulseInstrumentChanged(role, value),
+                      ),
+              ),
+              FilledButton.icon(
+                style: buttonStyle,
+                onPressed: _running ? null : () => _checkPulseConnection(role),
+                icon: const Icon(Icons.usb_rounded, size: 18),
+                label: const Text('Check Connection'),
+              ),
+            ],
+          ),
+          const SizedBox(height: 6),
+          Text(detail, style: Theme.of(context).textTheme.bodySmall),
+        ],
+      ),
+    );
+  }
+
+  Widget _visaResourceDropdown(DeviceRole role) {
+    final selected = role == DeviceRole.drain ? _drainResource : _gateResource;
+    final label = role == DeviceRole.drain ? 'Target Instrument' : 'Target Instrument';
+
+    return DropdownButtonFormField<String>(
+      value: _resources.contains(selected) ? selected : null,
+      isExpanded: true,
+      decoration: InputDecoration(
+        labelText: label,
+        border: OutlineInputBorder(borderRadius: BorderRadius.circular(16)),
+      ),
+      items: _resources
+          .map((resource) => DropdownMenuItem<String>(
+                value: resource,
+                child: Tooltip(
+                  message: _resourceLabel(resource),
+                  child: Text(
+                    _resourceShortLabel(resource),
+                    overflow: TextOverflow.ellipsis,
+                    maxLines: 1,
+                  ),
+                ),
+              ))
+          .toList(),
+      selectedItemBuilder: (context) => _resources
+          .map(
+            (resource) => Align(
+              alignment: Alignment.centerLeft,
+              child: Tooltip(
+                message: _resourceLabel(resource),
+                child: Text(
+                  _resourceShortLabel(resource),
+                  overflow: TextOverflow.ellipsis,
+                  maxLines: 1,
+                ),
+              ),
+            ),
+          )
+          .toList(),
+      onChanged: (_running || _loadingResources)
+          ? null
+          : (value) {
+              if (value == null) {
+                return;
+              }
+              setState(() {
+                if (role == DeviceRole.drain) {
+                  _drainResource = value;
+                  _drainDetail = 'Selected Drain: ${_resourceLabel(value)}';
+                } else {
+                  _gateResource = value;
+                  _port.text = value;
+                  _gateDetail = 'Selected Gate: ${_resourceLabel(value)}';
+                }
+              });
+            },
+      hint: Text(_loadingResources ? 'Loading VISA resources...' : 'Select VISA resource'),
+    );
+  }
+
+  Widget _pulseVisaResourceDropdown(PulseDeviceRole role) {
+    final selected = _pulseTargetFor(role);
+    return DropdownButtonFormField<String>(
+      value: _resources.contains(selected) ? selected : null,
+      isExpanded: true,
+      decoration: InputDecoration(
+        labelText: 'Target Instrument',
+        border: OutlineInputBorder(borderRadius: BorderRadius.circular(16)),
+      ),
+      items: _resources
+          .map((resource) => DropdownMenuItem<String>(
+                value: resource,
+                child: Tooltip(
+                  message: _resourceLabel(resource),
+                  child: Text(
+                    _resourceShortLabel(resource),
+                    overflow: TextOverflow.ellipsis,
+                    maxLines: 1,
+                  ),
+                ),
+              ))
+          .toList(),
+      selectedItemBuilder: (context) => _resources
+          .map(
+            (resource) => Align(
+              alignment: Alignment.centerLeft,
+              child: Tooltip(
+                message: _resourceLabel(resource),
+                child: Text(
+                  _resourceShortLabel(resource),
+                  overflow: TextOverflow.ellipsis,
+                  maxLines: 1,
+                ),
+              ),
+            ),
+          )
+          .toList(),
+      onChanged: (_running || _loadingResources)
+          ? null
+          : (value) {
+              if (value == null) {
+                return;
+              }
+              setState(() {
+                switch (role) {
+                  case PulseDeviceRole.generator:
+                    _pulseGeneratorResource = value;
+                    _pulseGeneratorDetail = 'Selected ${role.label}: ${_resourceLabel(value)}';
+                    return;
+                  case PulseDeviceRole.oscilloscope:
+                    _pulseScopeResource = value;
+                    _pulseScopeDetail = 'Selected ${role.label}: ${_resourceLabel(value)}';
+                    return;
+                  case PulseDeviceRole.current:
+                    _pulseCurrentResource = value;
+                    _pulseCurrentDetail = 'Selected ${role.label}: ${_resourceLabel(value)}';
+                    return;
+                }
+              });
+            },
+      hint: Text(_loadingResources ? 'Loading VISA resources...' : 'Select VISA resource'),
     );
   }
 
@@ -403,12 +1275,18 @@ class _PulseTesterPageState extends State<PulseTesterPage> {
           child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
             Text('Sweep Setup', style: Theme.of(context).textTheme.headlineSmall),
             const SizedBox(height: 8),
-            Text('Start Sweep sends commands through the selected Windows native transport layer.', style: Theme.of(context).textTheme.bodyMedium),
+            Text(
+              'Start Sweep uses the ${_gateMeasurementMode == GateMeasurementMode.pulse ? 'Pulse Function Generator' : 'Gate'} configuration below.',
+              style: Theme.of(context).textTheme.bodyMedium,
+            ),
             const SizedBox(height: 8),
-            Text('Selected instrument: ${_instrument.label}', style: Theme.of(context).textTheme.bodySmall),
+            Text('Selected Gate instrument: ${_activeGateInstrumentLabel()}', style: Theme.of(context).textTheme.bodySmall),
             const SizedBox(height: 20),
             Wrap(spacing: 16, runSpacing: 16, children: [
-              SizedBox(width: 220, child: _field(_port, _transport.targetLabel, _transport.defaultTarget(_instrument))),
+              if (_gateMeasurementMode == GateMeasurementMode.dc && _gateTransport != CommTransport.visa)
+                SizedBox(width: 220, child: _field(_port, _gateTransport.targetLabel, _gateTransport.defaultTarget(_gateInstrument))),
+              if (_gateMeasurementMode == GateMeasurementMode.pulse && _pulseGeneratorTransport != CommTransport.visa)
+                SizedBox(width: 220, child: _field(_port, _pulseGeneratorTransport.targetLabel, _pulseGeneratorTransport.defaultTarget(_pulseGeneratorInstrument))),
               SizedBox(width: 220, child: _field(_periodUs, 'Period (us)', '10.0', numeric: true)),
               SizedBox(width: 220, child: _field(_duty, 'Duty Ratio (0-1)', '0.5', numeric: true)),
               SizedBox(width: 220, child: _field(_vStart, 'Voltage Start (Vpp)', '1.0', numeric: true)),
@@ -435,40 +1313,18 @@ class _PulseTesterPageState extends State<PulseTesterPage> {
                 label: const Text('Reset Defaults'),
               ),
             ]),
-            if (!_canControl) ...[
+            if ((_gateMeasurementMode == GateMeasurementMode.dc && !_canControl(DeviceRole.gate)) ||
+                (_gateMeasurementMode == GateMeasurementMode.pulse &&
+                    !(_pulseGeneratorTransport == CommTransport.visa ||
+                        _pulseGeneratorInstrument == TestInstrument.afg2225))) ...[
               const SizedBox(height: 12),
               Text(
-                'AFG-2225 sweep logic is active, and the transport can be switched between Serial SCPI, VISA SCPI, and TCP Socket.',
+                'AFG-2225 sweep logic is active on ${_gateMeasurementMode == GateMeasurementMode.pulse ? _pulseGeneratorTransport.label : _gateTransport.label}.',
                 style: Theme.of(context).textTheme.bodySmall,
               ),
             ],
           ]),
         ),
-      ),
-    );
-  }
-
-  Widget _statusColumn(double f, double d, int steps, double sec) {
-    return Column(children: [_derivedCard(f, d, steps, sec), const SizedBox(height: 20), _logCard()]);
-  }
-
-  Widget _derivedCard(double f, double d, int steps, double sec) {
-    return Card(
-      elevation: 0,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
-      child: Padding(
-        padding: const EdgeInsets.all(20),
-        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          Text('Derived Values', style: Theme.of(context).textTheme.titleLarge),
-          const SizedBox(height: 16),
-          Wrap(spacing: 12, runSpacing: 12, children: [
-            _MetricTile(label: 'Frequency', value: '${f.toStringAsFixed(2)} Hz'),
-            _MetricTile(label: 'Duty', value: '${d.toStringAsFixed(1)} %'),
-            _MetricTile(label: 'Steps', value: '$steps'),
-            _MetricTile(label: 'Estimated Run', value: '${sec.toStringAsFixed(2)} s'),
-            const _MetricTile(label: 'Control Path', value: 'Windows C++'),
-          ]),
-        ]),
       ),
     );
   }
@@ -521,26 +1377,6 @@ class _PulseTesterPageState extends State<PulseTesterPage> {
         border: OutlineInputBorder(borderRadius: BorderRadius.circular(16)),
       ),
       onChanged: (_) => setState(() {}),
-    );
-  }
-}
-
-class _MetricTile extends StatelessWidget {
-  const _MetricTile({required this.label, required this.value});
-  final String label;
-  final String value;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      width: 148,
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(color: const Color(0xFFE7F4EE), borderRadius: BorderRadius.circular(18)),
-      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        Text(label, style: Theme.of(context).textTheme.labelLarge),
-        const SizedBox(height: 6),
-        Text(value, style: Theme.of(context).textTheme.titleMedium),
-      ]),
     );
   }
 }
@@ -621,6 +1457,19 @@ class ValidationException implements Exception {
 
 class NativeInstrumentBridge {
   static const MethodChannel _channel = MethodChannel('sic_mosfet/native_control');
+
+  Future<List<String>> listResources() async {
+    final response = await _channel.invokeListMethod<Object?>('listResources');
+    return (response ?? const <Object?>[]).map((item) => item.toString()).toList();
+  }
+
+  Future<String> queryIdn({required String resource}) async {
+    final response = await _channel.invokeMapMethod<Object?, Object?>(
+      'queryIdn',
+      <String, Object?>{'resource': resource},
+    );
+    return (response?['idn'] ?? '').toString();
+  }
 
   Future<BridgeResult> identify({
     required String target,
@@ -723,9 +1572,38 @@ List<BridgeLog> _bridgeLogsFromDynamic(Object? raw) {
   }).toList();
 }
 
+enum DeviceRole {
+  drain('Drain'),
+  gate('Gate');
+
+  const DeviceRole(this.label);
+  final String label;
+}
+
+enum GateMeasurementMode {
+  dc('DC'),
+  pulse('PULSE');
+
+  const GateMeasurementMode(this.label);
+  final String label;
+}
+
+enum PulseDeviceRole {
+  generator('Function Generator'),
+  oscilloscope('Oscilloscope'),
+  current('Current Measurement');
+
+  const PulseDeviceRole(this.label);
+  final String label;
+}
+
 enum TestInstrument {
   afg2225(
     label: 'GW Instek AFG-2225',
+    supportedTransports: <CommTransport>[
+      CommTransport.serial,
+      CommTransport.visa,
+    ],
     defaultPort: 'COM5',
     defaultVisaResource: 'USB0::0x0000::0x0000::INSTR',
     defaultTcpEndpoint: '192.168.0.10:5025',
@@ -734,6 +1612,9 @@ enum TestInstrument {
   ),
   oscilloscope(
     label: 'Oscilloscope',
+    supportedTransports: <CommTransport>[
+      CommTransport.visa,
+    ],
     defaultPort: 'COM6',
     defaultVisaResource: 'TCPIP0::192.168.0.20::inst0::INSTR',
     defaultTcpEndpoint: '192.168.0.20:5025',
@@ -742,15 +1623,32 @@ enum TestInstrument {
   ),
   custom(
     label: 'Custom Instrument',
+    supportedTransports: <CommTransport>[
+      CommTransport.serial,
+      CommTransport.visa,
+    ],
     defaultPort: 'COM7',
     defaultVisaResource: 'USB0::CUSTOM::INSTR',
     defaultTcpEndpoint: '127.0.0.1:5025',
     description: 'Reserved slot for a custom device.',
     connectionHint: 'Not implemented',
+  ),
+  currentMeter(
+    label: 'Current Measurement',
+    supportedTransports: <CommTransport>[
+      CommTransport.serial,
+      CommTransport.visa,
+    ],
+    defaultPort: 'COM8',
+    defaultVisaResource: 'USB0::CURRENT::INSTR',
+    defaultTcpEndpoint: '127.0.0.1:5025',
+    description: 'Current measurement instrument slot.',
+    connectionHint: 'Not implemented',
   );
 
   const TestInstrument({
     required this.label,
+    required this.supportedTransports,
     required this.defaultPort,
     required this.defaultVisaResource,
     required this.defaultTcpEndpoint,
@@ -759,6 +1657,7 @@ enum TestInstrument {
   });
 
   final String label;
+  final List<CommTransport> supportedTransports;
   final String defaultPort;
   final String defaultVisaResource;
   final String defaultTcpEndpoint;

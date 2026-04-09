@@ -4,6 +4,7 @@
 #include <flutter/standard_method_codec.h>
 
 #include <optional>
+#include <stdexcept>
 
 #include "flutter/generated_plugin_registrant.h"
 
@@ -91,31 +92,50 @@ void FlutterWindow::SetUpMethodChannel() {
   channel_->SetMethodCallHandler(
       [this](const flutter::MethodCall<flutter::EncodableValue>& call,
              std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>> result) {
-        const auto* arguments = std::get_if<flutter::EncodableMap>(call.arguments());
-        if (call.method_name() == "identify") {
-          if (arguments == nullptr) {
-            result->Error("bad_args", "Arguments are required.");
+        try {
+          const auto* arguments =
+              std::get_if<flutter::EncodableMap>(call.arguments());
+          if (call.method_name() == "identify") {
+            if (arguments == nullptr) {
+              result->Error("bad_args", "Arguments are required.");
+              return;
+            }
+            result->Success(instrument_controller_->Identify(*arguments));
             return;
           }
-          result->Success(instrument_controller_->Identify(*arguments));
-          return;
-        }
-        if (call.method_name() == "startSweep") {
-          if (arguments == nullptr) {
-            result->Error("bad_args", "Arguments are required.");
+          if (call.method_name() == "listResources") {
+            result->Success(instrument_controller_->ListResources());
             return;
           }
-          result->Success(instrument_controller_->StartSweep(*arguments));
-          return;
+          if (call.method_name() == "queryIdn") {
+            if (arguments == nullptr) {
+              result->Error("bad_args", "Arguments are required.");
+              return;
+            }
+            result->Success(instrument_controller_->QueryIdn(*arguments));
+            return;
+          }
+          if (call.method_name() == "startSweep") {
+            if (arguments == nullptr) {
+              result->Error("bad_args", "Arguments are required.");
+              return;
+            }
+            result->Success(instrument_controller_->StartSweep(*arguments));
+            return;
+          }
+          if (call.method_name() == "stopSweep") {
+            result->Success(instrument_controller_->StopSweep());
+            return;
+          }
+          if (call.method_name() == "fetchLogs") {
+            result->Success(instrument_controller_->FetchLogs());
+            return;
+          }
+          result->NotImplemented();
+        } catch (const std::exception& error) {
+          result->Error("native_error", error.what());
+        } catch (...) {
+          result->Error("native_error", "Unknown native exception");
         }
-        if (call.method_name() == "stopSweep") {
-          result->Success(instrument_controller_->StopSweep());
-          return;
-        }
-        if (call.method_name() == "fetchLogs") {
-          result->Success(instrument_controller_->FetchLogs());
-          return;
-        }
-        result->NotImplemented();
       });
 }
