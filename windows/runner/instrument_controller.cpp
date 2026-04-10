@@ -4,6 +4,7 @@
 #include <chrono>
 #include <sstream>
 #include <stdexcept>
+#include <windows.h>
 
 namespace {
 
@@ -41,6 +42,139 @@ double PeriodUsToFrequency(double period_us) {
   }
   return 1000000.0 / period_us;
 }
+
+using ViStatus = long;
+using ViSession = unsigned long;
+using ViFindList = unsigned long;
+using ViUInt32 = unsigned long;
+using ViChar = char;
+
+constexpr ViStatus kViSuccess = 0;
+constexpr ViUInt32 kViAttrTmoValue = 0x3FFF001A;
+
+using ViOpenDefaultRMFn = ViStatus(__stdcall*)(ViSession*);
+using ViCloseFn = ViStatus(__stdcall*)(ViSession);
+using ViFindRsrcFn =
+    ViStatus(__stdcall*)(ViSession, const ViChar*, ViFindList*, ViUInt32*, ViChar[]);
+using ViFindNextFn = ViStatus(__stdcall*)(ViFindList, ViChar[]);
+using ViOpenFn =
+    ViStatus(__stdcall*)(ViSession, const ViChar*, ViUInt32, ViUInt32, ViSession*);
+using ViSetAttributeFn = ViStatus(__stdcall*)(ViSession, ViUInt32, ViUInt32);
+using ViWriteFn =
+    ViStatus(__stdcall*)(ViSession, const unsigned char*, ViUInt32, ViUInt32*);
+using ViReadFn =
+    ViStatus(__stdcall*)(ViSession, unsigned char*, ViUInt32, ViUInt32*);
+
+struct VisaApi {
+  HMODULE dll = nullptr;
+  ViOpenDefaultRMFn open_default_rm = nullptr;
+  ViCloseFn close = nullptr;
+  ViFindRsrcFn find_rsrc = nullptr;
+  ViFindNextFn find_next = nullptr;
+  ViOpenFn open = nullptr;
+  ViSetAttributeFn set_attribute = nullptr;
+  ViWriteFn write = nullptr;
+  ViReadFn read = nullptr;
+};
+
+VisaApi& GetVisaApi() {
+  static VisaApi api;
+  static bool loaded = false;
+  if (!loaded) {
+    api.dll = ::LoadLibraryW(L"visa64.dll");
+    if (!api.dll) {
+      api.dll = ::LoadLibraryW(L"visa32.dll");
+    }
+    if (!api.dll) {
+      throw std::runtime_error("NI-VISA DLL (visa64.dll/visa32.dll) not found.");
+    }
+    api.open_default_rm = reinterpret_cast<ViOpenDefaultRMFn>(
+        ::GetProcAddress(api.dll, "viOpenDefaultRM"));
+    api.close = reinterpret_cast<ViCloseFn>(::GetProcAddress(api.dll, "viClose"));
+    api.find_rsrc =
+        reinterpret_cast<ViFindRsrcFn>(::GetProcAddress(api.dll, "viFindRsrc"));
+    api.find_next =
+        reinterpret_cast<ViFindNextFn>(::GetProcAddress(api.dll, "viFindNext"));
+    api.open = reinterpret_cast<ViOpenFn>(::GetProcAddress(api.dll, "viOpen"));
+    api.set_attribute = reinterpret_cast<ViSetAttributeFn>(
+        ::GetProcAddress(api.dll, "viSetAttribute"));
+    api.write = reinterpret_cast<ViWriteFn>(::GetProcAddress(api.dll, "viWrite"));
+    api.read = reinterpret_cast<ViReadFn>(::GetProcAddress(api.dll, "viRead"));
+    if (!api.open_default_rm || !api.close || !api.find_rsrc || !api.find_next ||
+        !api.open || !api.set_attribute || !api.write || !api.read) {
+      throw std::runtime_error("Failed to load NI-VISA symbols.");
+    }
+    loaded = true;
+  }
+  return api;
+}
+
+std::vector<std::string> ListVisaResources() {
+  auto& api = GetVisaApi();
+  std::vector<std::string> out;
+  ViSession rm = 0;
+  ViFindList find_list = 0;
+  ViUInt32 count = 0;
+  ViChar desc[256] = {};
+
+  auto rm_status = api.open_default_rm(&rm);
+  if (rm_status < kViSuccess) {
+    throw std::runtime_error("viOpenDefaultRM failed: " + std::to_string(rm_status));
+  }
+  auto find_status = api.find_rsrc(rm, const_cast<ViChar*>("?*INSTR"), &find_list,
+                                   &count, desc);
+  if (find_status < kViSuccess) {
+    api.close(rm);
+    throw std::runtime_error("viFindRsrc failed: " + std::to_string(find_status));
+  }
+  out.emplace_back(desc);
+  for (ViUInt32 i = 1; i < count; ++i) {
+    auto next_status = api.find_next(find_list, desc);
+    if (next_status < kViSuccess) {
+      break;
+    }
+    out.emplace_back(desc);
+  }
+  api.close(find_list);
+  api.close(rm);
+  return out;
+}
+
+std::string QueryVisaIdn(const std::string& resource, int timeout_ms = 3000) {
+  auto& api = GetVisaApi();
+  ViSession rm = 0;
+  ViSession inst = 0;
+  auto rm_status = api.open_default_rm(&rm);
+  if (rm_status < kViSuccess) {
+    throw std::runtime_error("viOpenDefaultRM failed: " + std::to_string(rm_status));
+  }
+  auto open_status =
+      api.open(rm, const_cast<ViChar*>(resource.c_str()), 0, timeout_ms, &inst);
+  if (open_status < kViSuccess) {
+    api.close(rm);
+    throw std::runtime_error("viOpen failed: " + std::to_string(open_status));
+  }
+  api.set_attribute(inst, kViAttrTmoValue, static_cast<ViUInt32>(timeout_ms));
+  const std::string command = "*IDN?\n";
+  ViUInt32 written = 0;
+  auto write_status = api.write(
+      inst, reinterpret_cast<const unsigned char*>(command.c_str()),
+      static_cast<ViUInt32>(command.size()), &written);
+  if (write_status < kViSuccess) {
+    api.close(inst);
+    api.close(rm);
+    throw std::runtime_error("viWrite failed: " + std::to_string(write_status));
+  }
+  unsigned char buffer[2048] = {};
+  ViUInt32 read = 0;
+  auto read_status = api.read(inst, buffer, sizeof(buffer) - 1, &read);
+  api.close(inst);
+  api.close(rm);
+  if (read_status < kViSuccess) {
+    throw std::runtime_error("viRead failed: " + std::to_string(read_status));
+  }
+  return std::string(reinterpret_cast<char*>(buffer), read);
+}
 void SetOutput(IScpiTransport& transport, bool enabled) {
   transport.WriteLine(enabled ? "OUTP1 ON" : "OUTP1 OFF");
 }
@@ -58,7 +192,7 @@ void SetSquareWave(IScpiTransport& transport, double frequency, double vpp,
 }  // namespace
 
 InstrumentController::InstrumentController()
-    : running_(false), stop_requested_(false) {}
+    : running_(false), stop_requested_(false), scan_running_(false) {}
 
 InstrumentController::~InstrumentController() {
   Shutdown();
@@ -96,6 +230,71 @@ flutter::EncodableValue InstrumentController::Identify(
     result[EncodableValue("logs")] = EncodableValue(logs);
     return EncodableValue(result);
   }
+}
+
+flutter::EncodableValue InstrumentController::ListResources() {
+  EncodableList resources;
+  for (const auto& item : ListVisaResources()) {
+    resources.push_back(EncodableValue(item));
+  }
+  return EncodableValue(resources);
+}
+
+flutter::EncodableValue InstrumentController::QueryIdn(
+    const flutter::EncodableMap& arguments) {
+  EncodableMap result;
+  const std::string resource = GetString(arguments, "resource");
+  result[EncodableValue("resource")] = EncodableValue(resource);
+  result[EncodableValue("idn")] = EncodableValue(QueryVisaIdn(resource));
+  return EncodableValue(result);
+}
+
+flutter::EncodableValue InstrumentController::StartResourceScan() {
+  if (scan_running_) {
+    EncodableMap result;
+    result[EncodableValue("started")] = EncodableValue(false);
+    result[EncodableValue("running")] = EncodableValue(true);
+    return EncodableValue(result);
+  }
+
+  if (scan_worker_.joinable()) {
+    scan_worker_.join();
+  }
+
+  {
+    std::lock_guard<std::mutex> lock(scan_mutex_);
+    scan_resources_.clear();
+    scan_name_entries_.clear();
+    scan_error_.clear();
+  }
+
+  scan_running_ = true;
+  scan_worker_ = std::thread(&InstrumentController::RunResourceScan, this);
+
+  EncodableMap result;
+  result[EncodableValue("started")] = EncodableValue(true);
+  result[EncodableValue("running")] = EncodableValue(true);
+  return EncodableValue(result);
+}
+
+flutter::EncodableValue InstrumentController::FetchResourceScan() {
+  EncodableMap result;
+  result[EncodableValue("running")] = EncodableValue(scan_running_.load());
+
+  {
+    std::lock_guard<std::mutex> lock(scan_mutex_);
+    EncodableList resources;
+    for (const auto& resource : scan_resources_) {
+      resources.push_back(EncodableValue(resource));
+    }
+    result[EncodableValue("resources")] = EncodableValue(resources);
+    result[EncodableValue("names")] = EncodableValue(scan_name_entries_);
+    if (!scan_error_.empty()) {
+      result[EncodableValue("error")] = EncodableValue(scan_error_);
+    }
+  }
+
+  return EncodableValue(result);
 }
 
 flutter::EncodableValue InstrumentController::StartSweep(
@@ -150,6 +349,9 @@ void InstrumentController::Shutdown() {
   if (worker_.joinable()) {
     worker_.join();
   }
+  if (scan_worker_.joinable()) {
+    scan_worker_.join();
+  }
 }
 
 void InstrumentController::AddLog(const std::string& level,
@@ -160,6 +362,40 @@ void InstrumentController::AddLog(const std::string& level,
 
   std::lock_guard<std::mutex> lock(logs_mutex_);
   pending_logs_.push_back(EncodableValue(log));
+}
+
+void InstrumentController::RunResourceScan() {
+  try {
+    const auto resources = ListVisaResources();
+    {
+      std::lock_guard<std::mutex> lock(scan_mutex_);
+      scan_resources_ = resources;
+      scan_name_entries_.clear();
+      scan_error_.clear();
+      for (const auto& resource : resources) {
+        EncodableMap entry;
+        entry[EncodableValue("resource")] = EncodableValue(resource);
+        entry[EncodableValue("name")] = EncodableValue(resource);
+        scan_name_entries_.push_back(EncodableValue(entry));
+      }
+    }
+
+    for (size_t i = 0; i < resources.size(); ++i) {
+      try {
+        const auto idn = QueryVisaIdn(resources[i]);
+        std::lock_guard<std::mutex> lock(scan_mutex_);
+        EncodableMap entry;
+        entry[EncodableValue("resource")] = EncodableValue(resources[i]);
+        entry[EncodableValue("name")] = EncodableValue(idn);
+        scan_name_entries_[i] = EncodableValue(entry);
+      } catch (...) {
+      }
+    }
+  } catch (const std::exception& error) {
+    std::lock_guard<std::mutex> lock(scan_mutex_);
+    scan_error_ = error.what();
+  }
+  scan_running_ = false;
 }
 
 void InstrumentController::RunSweep(SweepConfig config) {

@@ -115,6 +115,14 @@ void FlutterWindow::SetUpMethodChannel() {
             result->Success(instrument_controller_->QueryIdn(*arguments));
             return;
           }
+          if (call.method_name() == "startResourceScan") {
+            result->Success(instrument_controller_->StartResourceScan());
+            return;
+          }
+          if (call.method_name() == "fetchResourceScan") {
+            result->Success(instrument_controller_->FetchResourceScan());
+            return;
+          }
           if (call.method_name() == "startSweep") {
             if (arguments == nullptr) {
               result->Error("bad_args", "Arguments are required.");
