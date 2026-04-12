@@ -78,6 +78,9 @@ class _PulseTesterPageState extends State<PulseTesterPage> {
   late final TextEditingController _directLinkIp;
   late final TextEditingController _autoSaveDirectoryController;
   final List<SweepSample> _sweepSamples = <SweepSample>[];
+  IOSink? _autoSaveGraphSink;
+  String? _autoSaveGraphPath;
+  int _autoSavedPointCount = 0;
   bool _running = false;
   MeasurementSweepMode _measurementSweepMode = MeasurementSweepMode.idVgs;
   bool _repeatEnabled = false;
@@ -141,6 +144,7 @@ class _PulseTesterPageState extends State<PulseTesterPage> {
   @override
   void dispose() {
     _logPoller?.cancel();
+    unawaited(_closeAutoSaveSession());
     _bridge.dispose();
     _port.dispose();
     _periodUs.dispose();
@@ -267,6 +271,7 @@ class _PulseTesterPageState extends State<PulseTesterPage> {
 
   void _reset() {
     final d = PulseTestConfig.defaults;
+    unawaited(_closeAutoSaveSession());
     setState(() {
       _sweepSamples.clear();
       _port.text = d.port;
@@ -349,6 +354,7 @@ class _PulseTesterPageState extends State<PulseTesterPage> {
     }
     try {
       final config = _readConfig();
+      await _prepareAutoSaveSession();
       setState(() {
         _logs.clear();
         _sweepSamples.clear();
@@ -372,11 +378,13 @@ class _PulseTesterPageState extends State<PulseTesterPage> {
         _startPollingLogs();
       }
     } on ValidationException catch (error) {
+      await _closeAutoSaveSession();
       if (mounted) {
         setState(() => _running = false);
       }
       _message(error.message);
     } catch (error) {
+      await _closeAutoSaveSession();
       if (mounted) {
         setState(() {
           _running = false;
@@ -401,12 +409,10 @@ class _PulseTesterPageState extends State<PulseTesterPage> {
     _logPoller = Timer.periodic(const Duration(milliseconds: 200), (_) async {
       final update = await _bridge.fetchLogs();
       _appendBridgeLogs(update.logs);
+      await _loadSweepData();
       if (!update.running && mounted) {
         _logPoller?.cancel();
-        await _loadSweepData();
-        if (_autoSaveEnabled && _autoSaveDirectoryController.text.trim().isNotEmpty) {
-          await _saveGraphBundle(autoSave: true);
-        }
+        await _closeAutoSaveSession();
         setState(() {
           _running = false;
           if (_selection.gateDetail == 'Sweep started.') {
@@ -425,6 +431,7 @@ class _PulseTesterPageState extends State<PulseTesterPage> {
 
   Future<void> _loadSweepData() async {
     final result = await _bridge.fetchSweepData();
+    await _appendNewPointsToAutoSave(result.points);
     if (!mounted) {
       return;
     }
@@ -455,6 +462,63 @@ class _PulseTesterPageState extends State<PulseTesterPage> {
   String _graphBundleName() =>
       '${_sweepModeFileTag}_drain_${_drainVFixed.text.trim().replaceAll('.', 'p')}_gate_${_vStart.text.trim().replaceAll('.', 'p')}_${_timeTag()}';
 
+  String _graphCsvHeader() => 'mode,index,gate_v,id_a,timestamp_ms';
+
+  Future<void> _prepareAutoSaveSession() async {
+    await _closeAutoSaveSession();
+    if (!_autoSaveEnabled) {
+      return;
+    }
+    final baseDir = _autoSaveDirectoryController.text.trim();
+    if (baseDir.isEmpty) {
+      throw const ValidationException('Auto-save folder is required when auto-save is enabled.');
+    }
+    final bundleDir = Directory('${baseDir}${Platform.pathSeparator}${_graphBundleName()}');
+    await bundleDir.create(recursive: true);
+    final graphPath =
+        '${bundleDir.path}${Platform.pathSeparator}${_sweepModeFileTag}_graph.csv';
+    final sink = File(graphPath).openWrite(mode: FileMode.writeOnly);
+    sink.writeln(_graphCsvHeader());
+    await sink.flush();
+    _autoSaveGraphSink = sink;
+    _autoSaveGraphPath = graphPath;
+    _autoSavedPointCount = 0;
+    _log(LogEntry.info('Auto-save graph CSV started: $graphPath'));
+  }
+
+  Future<void> _appendNewPointsToAutoSave(List<SweepSample> points) async {
+    final sink = _autoSaveGraphSink;
+    if (sink == null) {
+      return;
+    }
+    if (points.length < _autoSavedPointCount) {
+      _autoSavedPointCount = 0;
+    }
+    for (var i = _autoSavedPointCount; i < points.length; i++) {
+      final point = points[i];
+      sink.writeln(
+        '${_sweepModeFileTag},${i + 1},${point.gateVoltage},${point.drainCurrent},${point.timestampMs}',
+      );
+    }
+    _autoSavedPointCount = points.length;
+    await sink.flush();
+  }
+
+  Future<void> _closeAutoSaveSession() async {
+    final sink = _autoSaveGraphSink;
+    final graphPath = _autoSaveGraphPath;
+    _autoSaveGraphSink = null;
+    _autoSaveGraphPath = null;
+    _autoSavedPointCount = 0;
+    if (sink != null) {
+      await sink.flush();
+      await sink.close();
+      if (mounted && graphPath != null) {
+        _log(LogEntry.info('Auto-save graph CSV saved: $graphPath'));
+      }
+    }
+  }
+
   Future<void> _pickAutoSaveDirectory() async {
     final selected = await _nativeChannel.invokeMethod<String>('pickDirectory', {
       'initialDir': _autoSaveDirectoryController.text.trim().isEmpty
@@ -472,7 +536,7 @@ class _PulseTesterPageState extends State<PulseTesterPage> {
 
   String _buildGraphCsv() {
     final rows = <String>[
-      'mode,index,gate_v,id_a,timestamp_ms',
+      _graphCsvHeader(),
       for (var i = 0; i < _sweepSamples.length; i++)
         '${_sweepModeFileTag},${i + 1},${_sweepSamples[i].gateVoltage},${_sweepSamples[i].drainCurrent},${_sweepSamples[i].timestampMs}',
     ];
@@ -1531,24 +1595,81 @@ class _PulseTesterPageState extends State<PulseTesterPage> {
     );
   }
 
+  double? get _centerThermalValue {
+    if (_raspberryFrameValues.isEmpty || _raspberryFrameRows <= 0 || _raspberryFrameCols <= 0) {
+      return null;
+    }
+    final centerRow = _raspberryFrameRows ~/ 2;
+    final centerCol = _raspberryFrameCols ~/ 2;
+    final index = centerRow * _raspberryFrameCols + centerCol;
+    if (index < 0 || index >= _raspberryFrameValues.length) {
+      return null;
+    }
+    return _raspberryFrameValues[index];
+  }
+
   Widget _thermalViewCard() {
     final hasFrame = _raspberryFrameValues.isNotEmpty && _raspberryFrameRows > 0 && _raspberryFrameCols > 0;
+    final centerThermalValue = _centerThermalValue;
     return ThermalPreviewCard(
       streaming: _isRaspberryStreaming,
       infoText: _raspberryResult,
       preview: hasFrame
           ? AspectRatio(
               aspectRatio: _raspberryFrameCols / _raspberryFrameRows,
-              child: RotatedBox(
-                quarterTurns: 3,
-                child: CustomPaint(
-                  painter: ThermalFramePainter(
-                    values: _raspberryFrameValues,
-                    rows: _raspberryFrameRows,
-                    cols: _raspberryFrameCols,
+              child: Stack(
+                fit: StackFit.expand,
+                children: [
+                  RotatedBox(
+                    quarterTurns: 3,
+                    child: CustomPaint(
+                      painter: ThermalFramePainter(
+                        values: _raspberryFrameValues,
+                        rows: _raspberryFrameRows,
+                        cols: _raspberryFrameCols,
+                      ),
+                      child: const SizedBox.expand(),
+                    ),
                   ),
-                  child: const SizedBox.expand(),
-                ),
+                  IgnorePointer(
+                    child: Center(
+                      child: Container(
+                        width: 28,
+                        height: 28,
+                        alignment: Alignment.center,
+                        child: Stack(
+                          alignment: Alignment.center,
+                          children: [
+                            Container(width: 2, height: 24, color: Colors.white),
+                            Container(width: 24, height: 2, color: Colors.white),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+                  if (centerThermalValue != null)
+                    Positioned(
+                      left: 12,
+                      top: 12,
+                      child: DecoratedBox(
+                        decoration: BoxDecoration(
+                          color: Colors.black.withValues(alpha: 0.62),
+                          borderRadius: BorderRadius.circular(10),
+                        ),
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                          child: Text(
+                            '${centerThermalValue.toStringAsFixed(2)} °C',
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontWeight: FontWeight.w700,
+                              fontSize: 13,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                ],
               ),
             )
           : Container(
