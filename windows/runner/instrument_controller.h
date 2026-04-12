@@ -39,12 +39,15 @@ class InstrumentController {
     double voltage_end;
     double voltage_step;
     double drain_voltage;
+    double drain_current_limit_amps = 1.0;
     double on_time;
     double off_time;
     double duty_ratio;
     double current_measure_delay_seconds = 0.05;
     bool sync_drain_with_gate_timing = false;
     bool measure_drain_current_on_time = false;
+    bool voltage_drop_protect = false;
+    double voltage_drop_threshold_volts = 1.0;
   };
 
   std::atomic<bool> running_;
@@ -62,8 +65,10 @@ class InstrumentController {
   void AddLog(const std::string& level, const std::string& message);
   void RunResourceScan();
   void RunSweep(SweepConfig config);
+  void RunIdVgsPulseSweep(SweepConfig config);
   bool SleepWithStopCheck(double seconds);
   std::string QueryCurrentOnTime(IScpiTransport& transport);
+  std::string QueryVoltage(IScpiTransport& transport);
   flutter::EncodableMap BuildResult(bool success, const std::string& summary);
   static std::string GetString(const flutter::EncodableMap& arguments, const char* key);
   static double GetDouble(const flutter::EncodableMap& arguments, const char* key);

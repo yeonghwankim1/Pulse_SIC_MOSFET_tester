@@ -193,10 +193,10 @@ class _PulseTesterPageState extends State<PulseTesterPage> {
         _measurementSweepMode == MeasurementSweepMode.idVgs &&
         _selection.gateMeasurementMode == GateMeasurementMode.pulse;
     final currentTransport = shouldMeasureDrainCurrentOnTime
-        ? _selection.pulseTransportFor(PulseDeviceRole.current)
+        ? drainTransport
         : null;
     final currentTarget = shouldMeasureDrainCurrentOnTime
-        ? _selection.pulseTargetFor(PulseDeviceRole.current, _port.text)
+        ? drainTarget
         : null;
     final currentMeasureDelaySeconds = shouldMeasureDrainCurrentOnTime
         ? _num(_currentMeasureDelay.text, 'Current measure delay')
@@ -214,11 +214,19 @@ class _PulseTesterPageState extends State<PulseTesterPage> {
       drainTarget: drainTarget,
       drainTransport: drainTransport,
       drainVoltage: drainVoltage,
+      drainCurrentLimitAmps:
+          shouldSyncDrainWithGateTiming ? _num(_drainILimit.text, 'Drain current limit') : null,
       syncDrainWithGateTiming: shouldSyncDrainWithGateTiming,
       currentMeasureDelaySeconds: currentMeasureDelaySeconds,
       currentTarget: currentTarget,
       currentTransport: currentTransport,
       measureDrainCurrentOnTime: shouldMeasureDrainCurrentOnTime,
+      voltageDropProtect:
+          _measurementSweepMode != MeasurementSweepMode.realtime && _voltageDropProtect,
+      voltageDropThresholdVolts:
+          _measurementSweepMode != MeasurementSweepMode.realtime
+              ? _num(_voltageDropThreshold.text, 'Drop threshold')
+              : null,
     );
     config.validate();
     return config;

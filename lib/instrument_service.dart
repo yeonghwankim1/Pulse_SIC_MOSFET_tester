@@ -17,11 +17,14 @@ class PulseTestConfig {
     this.drainTarget,
     this.drainTransport,
     this.drainVoltage,
+    this.drainCurrentLimitAmps,
     this.syncDrainWithGateTiming = false,
     this.currentMeasureDelaySeconds,
     this.currentTarget,
     this.currentTransport,
     this.measureDrainCurrentOnTime = false,
+    this.voltageDropProtect = false,
+    this.voltageDropThresholdVolts,
   });
 
   static const defaults = PulseTestConfig(
@@ -48,11 +51,14 @@ class PulseTestConfig {
   final String? drainTarget;
   final CommTransport? drainTransport;
   final double? drainVoltage;
+  final double? drainCurrentLimitAmps;
   final bool syncDrainWithGateTiming;
   final double? currentMeasureDelaySeconds;
   final String? currentTarget;
   final CommTransport? currentTransport;
   final bool measureDrainCurrentOnTime;
+  final bool voltageDropProtect;
+  final double? voltageDropThresholdVolts;
 
   double get frequencyHz => 1000000.0 / periodUs;
   double get dutyPercent => dutyRatio * 100.0;
@@ -71,6 +77,12 @@ class PulseTestConfig {
     if (currentMeasureDelaySeconds != null &&
         currentMeasureDelaySeconds! > onTimeSeconds) {
       throw const ValidationException('Current measure delay cannot exceed On-Time.');
+    }
+    if (drainCurrentLimitAmps != null && drainCurrentLimitAmps! <= 0) {
+      throw const ValidationException('Drain current limit must be greater than 0.');
+    }
+    if (voltageDropThresholdVolts != null && voltageDropThresholdVolts! < 0) {
+      throw const ValidationException('Drop threshold cannot be negative.');
     }
     if (dutyRatio <= 0 || dutyRatio >= 1) {
       throw const ValidationException('Duty ratio must be between 0 and 1.');
@@ -177,6 +189,8 @@ class NativeInstrumentBridge {
         if (config.drainTransport != null)
           'drainTransportType': config.drainTransport!.nativeValue,
         if (config.drainVoltage != null) 'drainVoltage': config.drainVoltage,
+        if (config.drainCurrentLimitAmps != null)
+          'drainCurrentLimitAmps': config.drainCurrentLimitAmps,
         'syncDrainWithGateTiming': config.syncDrainWithGateTiming,
         if (config.currentMeasureDelaySeconds != null)
           'currentMeasureDelaySeconds': config.currentMeasureDelaySeconds,
@@ -185,6 +199,9 @@ class NativeInstrumentBridge {
         if (config.currentTransport != null)
           'currentTransportType': config.currentTransport!.nativeValue,
         'measureDrainCurrentOnTime': config.measureDrainCurrentOnTime,
+        'voltageDropProtect': config.voltageDropProtect,
+        if (config.voltageDropThresholdVolts != null)
+          'voltageDropThresholdVolts': config.voltageDropThresholdVolts,
       },
     );
     return BridgeResult.fromMap(response ?? const <Object?, Object?>{});

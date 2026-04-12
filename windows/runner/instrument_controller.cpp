@@ -190,6 +190,15 @@ void SetDcVoltage(IScpiTransport& transport, double voltage) {
   transport.WriteLine("SOUR:VOLT " + FormatDouble(voltage, 6));
 }
 
+void ConfigureSourceMeter(IScpiTransport& transport, double current_limit_amps) {
+  transport.WriteLine("*CLS");
+  transport.WriteLine("SYST:REM");
+  transport.WriteLine("SOUR:FUNC VOLT");
+  transport.WriteLine("SENS:CURR:RANG:AUTO ON");
+  transport.WriteLine("SOUR:VOLT:ILIM " + FormatDouble(current_limit_amps, 6));
+  transport.WriteLine("SOUR:VOLT 0");
+}
+
 void SetSquareWave(IScpiTransport& transport, double frequency, double vpp,
                    double offset, double duty) {
   transport.WriteLine("*CLS");
@@ -198,6 +207,15 @@ void SetSquareWave(IScpiTransport& transport, double frequency, double vpp,
   transport.WriteLine("SOUR1:APPL:SQU " + FormatDouble(frequency, 6) + "," +
                       FormatDouble(vpp, 6) + "," + FormatDouble(offset, 6));
   transport.WriteLine("SOUR1:SQU:DCYC " + FormatDouble(duty, 3));
+}
+
+double ParseReading(const std::string& response, const char* label) {
+  size_t processed = 0;
+  const double value = std::stod(response, &processed);
+  if (processed == 0) {
+    throw std::runtime_error(std::string("Failed to parse ") + label + " response.");
+  }
+  return value;
 }
 
 }  // namespace
@@ -330,6 +348,9 @@ flutter::EncodableValue InstrumentController::StartSweep(
       GetDouble(arguments, "voltageEnd"),
       GetDouble(arguments, "voltageStep"),
       HasDouble(arguments, "drainVoltage") ? GetDouble(arguments, "drainVoltage") : 0.0,
+      HasDouble(arguments, "drainCurrentLimitAmps")
+          ? GetDouble(arguments, "drainCurrentLimitAmps")
+          : 1.0,
       GetDouble(arguments, "onTimeSeconds"),
       GetDouble(arguments, "offTimeSeconds"),
       GetDouble(arguments, "dutyRatio"),
@@ -342,6 +363,12 @@ flutter::EncodableValue InstrumentController::StartSweep(
       HasBool(arguments, "measureDrainCurrentOnTime")
           ? GetBool(arguments, "measureDrainCurrentOnTime")
           : false,
+      HasBool(arguments, "voltageDropProtect")
+          ? GetBool(arguments, "voltageDropProtect")
+          : false,
+      HasDouble(arguments, "voltageDropThresholdVolts")
+          ? GetDouble(arguments, "voltageDropThresholdVolts")
+          : 1.0,
   };
 
   {
@@ -432,6 +459,12 @@ void InstrumentController::RunResourceScan() {
 }
 
 void InstrumentController::RunSweep(SweepConfig config) {
+  if (config.sync_drain_with_gate_timing && config.measure_drain_current_on_time &&
+      !config.drain_target.empty()) {
+    RunIdVgsPulseSweep(config);
+    return;
+  }
+
   try {
     auto transport = CreateScpiTransport(config.transport_type, config.target);
     std::unique_ptr<IScpiTransport> drain_transport;
@@ -540,6 +573,131 @@ void InstrumentController::RunSweep(SweepConfig config) {
   stop_requested_ = false;
 }
 
+void InstrumentController::RunIdVgsPulseSweep(SweepConfig config) {
+  IScpiTransport* gate_output = nullptr;
+  IScpiTransport* drain_output = nullptr;
+  try {
+    auto gate_transport = CreateScpiTransport(config.transport_type, config.target);
+    auto drain_transport =
+        CreateScpiTransport(config.drain_transport_type, config.drain_target);
+    gate_output = gate_transport.get();
+    drain_output = drain_transport.get();
+
+    IScpiTransport* current_transport = drain_transport.get();
+    std::unique_ptr<IScpiTransport> dedicated_current_transport;
+    if (!config.current_target.empty() && !config.current_transport_type.empty() &&
+        !(config.current_target == config.drain_target &&
+          config.current_transport_type == config.drain_transport_type)) {
+      dedicated_current_transport =
+          CreateScpiTransport(config.current_transport_type, config.current_target);
+      current_transport = dedicated_current_transport.get();
+    }
+
+    const std::string gate_idn = gate_transport->Identify();
+    const std::string drain_idn = drain_transport->Identify();
+    const double frequency = PeriodUsToFrequency(config.period_us);
+    const double duty_percent = config.duty_ratio * 100.0;
+    const auto points =
+        BuildVoltagePoints(config.voltage_start, config.voltage_end, config.voltage_step);
+
+    AddLog("info", "Id-Vgs pulse sweep uses dedicated Gate/Drain timing control.");
+    AddLog("info", "Gate target: " + gate_transport->DisplayTarget());
+    AddLog("info", "Gate IDN: " + gate_idn);
+    AddLog("info", "Drain source meter: " + drain_transport->DisplayTarget());
+    AddLog("info", "Drain IDN: " + drain_idn);
+    if (current_transport == drain_transport.get()) {
+      AddLog("info", "Drain current is measured from the drain source meter.");
+    } else {
+      AddLog("info", "Current measurement target: " + current_transport->DisplayTarget());
+    }
+
+    ConfigureSourceMeter(*drain_transport, config.drain_current_limit_amps);
+    SetSourceMeterOutput(*drain_transport, false);
+    SetDcVoltage(*drain_transport, config.drain_voltage);
+    SetGeneratorOutput(*gate_transport, false);
+
+    for (size_t index = 0; index < points.size(); ++index) {
+      if (stop_requested_) {
+        AddLog("warning", "Stop requested before next Id-Vgs point.");
+        break;
+      }
+
+      SetGeneratorOutput(*gate_transport, false);
+      SetSourceMeterOutput(*drain_transport, false);
+      if (SleepWithStopCheck(config.off_time)) {
+        AddLog("warning", "Stop requested during gate/drain off-time.");
+        break;
+      }
+
+      const double gate_high = points[index];
+      const double offset = gate_high / 2.0;
+      SetSquareWave(*gate_transport, frequency, gate_high, offset, duty_percent);
+      SetDcVoltage(*drain_transport, config.drain_voltage);
+      SetSourceMeterOutput(*drain_transport, true);
+      SetGeneratorOutput(*gate_transport, true);
+      AddLog("info", "Step " + std::to_string(index + 1) + ": Gate high=" +
+                         FormatDouble(gate_high, 3) + " V, Drain=" +
+                         FormatDouble(config.drain_voltage, 3) + " V");
+
+      const double settle_seconds =
+          std::min(std::max(config.current_measure_delay_seconds, 0.0), config.on_time);
+      if (SleepWithStopCheck(settle_seconds)) {
+        AddLog("warning", "Stop requested before on-time current measurement.");
+        break;
+      }
+
+      const std::string current_response = QueryCurrentOnTime(*current_transport);
+      const double drain_current = ParseReading(current_response, "current");
+      AddLog("info", "Drain current during on-time: " +
+                         FormatDouble(drain_current, 6) + " A");
+
+      if (config.voltage_drop_protect) {
+        const std::string drain_voltage_response = QueryVoltage(*drain_transport);
+        const double measured_drain_voltage =
+            ParseReading(drain_voltage_response, "drain voltage");
+        const double voltage_drop = config.drain_voltage - measured_drain_voltage;
+        AddLog("info", "Measured drain voltage: " +
+                           FormatDouble(measured_drain_voltage, 6) + " V");
+        if (voltage_drop > config.voltage_drop_threshold_volts) {
+          AddLog("warning", "Voltage protection triggered. Drain drop=" +
+                                FormatDouble(voltage_drop, 6) + " V");
+          break;
+        }
+      }
+
+      const double remaining_on_time = std::max(config.on_time - settle_seconds, 0.0);
+      if (SleepWithStopCheck(remaining_on_time)) {
+        AddLog("warning", "Stop requested during gate/drain on-time.");
+        break;
+      }
+
+      SetGeneratorOutput(*gate_transport, false);
+      SetSourceMeterOutput(*drain_transport, false);
+    }
+
+    SetGeneratorOutput(*gate_transport, false);
+    SetSourceMeterOutput(*drain_transport, false);
+    AddLog("info", "Id-Vgs pulse sweep finished with outputs off.");
+  } catch (const std::exception& error) {
+    try {
+      if (gate_output != nullptr) {
+        SetGeneratorOutput(*gate_output, false);
+      }
+    } catch (...) {
+    }
+    try {
+      if (drain_output != nullptr) {
+        SetSourceMeterOutput(*drain_output, false);
+      }
+    } catch (...) {
+    }
+    AddLog("error", std::string("Transport Error: ") + error.what());
+  }
+
+  running_ = false;
+  stop_requested_ = false;
+}
+
 bool InstrumentController::SleepWithStopCheck(double seconds) {
   auto end = std::chrono::steady_clock::now() +
              std::chrono::milliseconds(static_cast<int>(std::max(seconds, 0.0) * 1000));
@@ -562,6 +720,19 @@ std::string InstrumentController::QueryCurrentOnTime(IScpiTransport& transport) 
   response = transport.ReadLine();
   if (response.empty()) {
     throw std::runtime_error("Empty current response.");
+  }
+  return response;
+}
+
+std::string InstrumentController::QueryVoltage(IScpiTransport& transport) {
+  transport.WriteLine("MEAS:VOLT?");
+  auto response = transport.ReadLine();
+  if (response.empty()) {
+    transport.WriteLine("READ?");
+    response = transport.ReadLine();
+  }
+  if (response.empty()) {
+    throw std::runtime_error("Empty voltage response.");
   }
   return response;
 }
