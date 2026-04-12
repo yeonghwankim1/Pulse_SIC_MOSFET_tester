@@ -11,6 +11,7 @@
 #include <thread>
 #include <vector>
 #include <windows.h>
+#include <shlobj.h>
 
 #include "flutter/generated_plugin_registrant.h"
 
@@ -43,6 +44,39 @@ std::wstring Utf8ToWide(const std::string& text) {
   std::wstring out(static_cast<size_t>(len - 1), L'\0');
   MultiByteToWideChar(CP_UTF8, 0, text.c_str(), -1, out.data(), len);
   return out;
+}
+
+std::string WideToUtf8(const std::wstring& text) {
+  if (text.empty()) {
+    return std::string();
+  }
+  const int len = WideCharToMultiByte(CP_UTF8, 0, text.c_str(), -1, nullptr, 0, nullptr, nullptr);
+  if (len <= 0) {
+    return std::string();
+  }
+  std::string out(static_cast<size_t>(len - 1), '\0');
+  WideCharToMultiByte(CP_UTF8, 0, text.c_str(), -1, out.data(), len, nullptr, nullptr);
+  return out;
+}
+
+std::optional<std::string> PickDirectory(const std::string& initial_dir) {
+  (void)initial_dir;
+  BROWSEINFOW bi = {};
+  bi.lpszTitle = L"Select Folder";
+  bi.ulFlags = BIF_RETURNONLYFSDIRS | BIF_NEWDIALOGSTYLE | BIF_USENEWUI;
+
+  const auto pidl = SHBrowseForFolderW(&bi);
+  if (pidl == nullptr) {
+    return std::nullopt;
+  }
+
+  wchar_t path[MAX_PATH] = {};
+  const bool ok = SHGetPathFromIDListW(pidl, path) == TRUE;
+  CoTaskMemFree(pidl);
+  if (!ok) {
+    return std::nullopt;
+  }
+  return WideToUtf8(path);
 }
 
 std::string QuoteForCmd(const std::string& text) {
@@ -495,6 +529,27 @@ void FlutterWindow::SetUpMethodChannel() {
           }
           if (call.method_name() == "fetchLogs") {
             result->Success(instrument_controller_->FetchLogs());
+            return;
+          }
+          if (call.method_name() == "fetchSweepData") {
+            result->Success(instrument_controller_->FetchSweepData());
+            return;
+          }
+          if (call.method_name() == "pickDirectory") {
+            std::string initial_dir;
+            if (arguments != nullptr) {
+              const auto initial_dir_it = arguments->find(flutter::EncodableValue("initialDir"));
+              if (initial_dir_it != arguments->end() &&
+                  std::holds_alternative<std::string>(initial_dir_it->second)) {
+                initial_dir = std::get<std::string>(initial_dir_it->second);
+              }
+            }
+            const auto selected = PickDirectory(initial_dir);
+            if (!selected.has_value()) {
+              result->Success();
+              return;
+            }
+            result->Success(flutter::EncodableValue(*selected));
             return;
           }
           result->NotImplemented();

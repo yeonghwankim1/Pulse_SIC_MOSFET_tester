@@ -24,9 +24,16 @@ class InstrumentController {
   flutter::EncodableValue StartSweep(const flutter::EncodableMap& arguments);
   flutter::EncodableValue StopSweep();
   flutter::EncodableValue FetchLogs();
+  flutter::EncodableValue FetchSweepData();
   void Shutdown();
 
  private:
+  struct SweepPointData {
+    double gate_voltage = 0.0;
+    double drain_current = 0.0;
+    double timestamp_ms = 0.0;
+  };
+
   struct SweepConfig {
     std::string transport_type;
     std::string target;
@@ -54,8 +61,10 @@ class InstrumentController {
   std::atomic<bool> stop_requested_;
   std::atomic<bool> scan_running_;
   std::mutex logs_mutex_;
+  std::mutex data_mutex_;
   std::mutex scan_mutex_;
   std::vector<flutter::EncodableValue> pending_logs_;
+  std::vector<SweepPointData> completed_points_;
   std::vector<std::string> scan_resources_;
   std::vector<flutter::EncodableValue> scan_name_entries_;
   std::string scan_error_;

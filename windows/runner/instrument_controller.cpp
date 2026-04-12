@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <sstream>
 #include <stdexcept>
 #include <windows.h>
@@ -11,6 +12,12 @@ namespace {
 using flutter::EncodableList;
 using flutter::EncodableMap;
 using flutter::EncodableValue;
+
+double CurrentTimestampMs() {
+  const auto now = std::chrono::system_clock::now();
+  return static_cast<double>(
+      std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count());
+}
 
 std::string FormatDouble(double value, int precision = 2) {
   std::ostringstream stream;
@@ -375,6 +382,10 @@ flutter::EncodableValue InstrumentController::StartSweep(
     std::lock_guard<std::mutex> lock(logs_mutex_);
     pending_logs_.clear();
   }
+  {
+    std::lock_guard<std::mutex> lock(data_mutex_);
+    completed_points_.clear();
+  }
 
   stop_requested_ = false;
   running_ = true;
@@ -401,6 +412,23 @@ flutter::EncodableValue InstrumentController::FetchLogs() {
   EncodableMap result;
   result[EncodableValue("logs")] = EncodableValue(logs);
   result[EncodableValue("running")] = EncodableValue(running_.load());
+  return EncodableValue(result);
+}
+
+flutter::EncodableValue InstrumentController::FetchSweepData() {
+  EncodableMap result;
+  EncodableList points;
+  {
+    std::lock_guard<std::mutex> lock(data_mutex_);
+    for (const auto& point : completed_points_) {
+      EncodableMap entry;
+      entry[EncodableValue("gateVoltage")] = EncodableValue(point.gate_voltage);
+      entry[EncodableValue("drainCurrent")] = EncodableValue(point.drain_current);
+      entry[EncodableValue("timestampMs")] = EncodableValue(point.timestamp_ms);
+      points.push_back(EncodableValue(entry));
+    }
+  }
+  result[EncodableValue("points")] = EncodableValue(points);
   return EncodableValue(result);
 }
 
@@ -534,6 +562,14 @@ void InstrumentController::RunSweep(SweepConfig config) {
         try {
           const std::string current_reading = QueryCurrentOnTime(*current_transport);
           AddLog("info", "Drain current during on-time: " + current_reading);
+          {
+            std::lock_guard<std::mutex> lock(data_mutex_);
+            completed_points_.push_back(SweepPointData{
+                vpp,
+                std::stod(current_reading),
+                CurrentTimestampMs(),
+            });
+          }
         } catch (const std::exception& error) {
           AddLog("warning", std::string("Drain current read failed during on-time: ") +
                                 error.what());
@@ -650,6 +686,14 @@ void InstrumentController::RunIdVgsPulseSweep(SweepConfig config) {
       const double drain_current = ParseReading(current_response, "current");
       AddLog("info", "Drain current during on-time: " +
                          FormatDouble(drain_current, 6) + " A");
+      {
+        std::lock_guard<std::mutex> lock(data_mutex_);
+        completed_points_.push_back(SweepPointData{
+            gate_high,
+            drain_current,
+            CurrentTimestampMs(),
+        });
+      }
 
       if (config.voltage_drop_protect) {
         const std::string drain_voltage_response = QueryVoltage(*drain_transport);

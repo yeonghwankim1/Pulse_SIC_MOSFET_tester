@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
@@ -75,6 +76,8 @@ class _PulseTesterPageState extends State<PulseTesterPage> {
   late final TextEditingController _raspberryHost;
   late final TextEditingController _raspberryPort;
   late final TextEditingController _directLinkIp;
+  late final TextEditingController _autoSaveDirectoryController;
+  final List<SweepSample> _sweepSamples = <SweepSample>[];
   bool _running = false;
   MeasurementSweepMode _measurementSweepMode = MeasurementSweepMode.idVgs;
   bool _repeatEnabled = false;
@@ -87,6 +90,8 @@ class _PulseTesterPageState extends State<PulseTesterPage> {
   bool _isReceivingRaspberry = false;
   bool _isDirectLinkBusy = false;
   bool _directLinkModeEnabled = false;
+  bool _autoSaveEnabled = false;
+  bool _autoSaveThermalEnabled = false;
   int _raspberryStreamToken = 0;
   String _raspberryResult = 'No Raspberry frame received yet.';
   List<double> _raspberryFrameValues = <double>[];
@@ -129,6 +134,7 @@ class _PulseTesterPageState extends State<PulseTesterPage> {
     _raspberryHost = TextEditingController(text: '0.0.0.0');
     _raspberryPort = TextEditingController(text: '5001');
     _directLinkIp = TextEditingController(text: '192.168.50.1');
+    _autoSaveDirectoryController = TextEditingController();
     unawaited(_refreshEthernetAdapters());
   }
 
@@ -163,6 +169,7 @@ class _PulseTesterPageState extends State<PulseTesterPage> {
     _raspberryHost.dispose();
     _raspberryPort.dispose();
     _directLinkIp.dispose();
+    _autoSaveDirectoryController.dispose();
     super.dispose();
   }
 
@@ -261,6 +268,7 @@ class _PulseTesterPageState extends State<PulseTesterPage> {
   void _reset() {
     final d = PulseTestConfig.defaults;
     setState(() {
+      _sweepSamples.clear();
       _port.text = d.port;
       _selection.reset(_port.text);
       _periodUs.text = '${d.periodUs}';
@@ -286,12 +294,15 @@ class _PulseTesterPageState extends State<PulseTesterPage> {
       _realtimeDurationSec.text = '10';
       _realtimeIntervalMs.text = '200';
       _realtimeDrainRange.text = '5.0';
+      _autoSaveDirectoryController.clear();
       _measurementSweepMode = MeasurementSweepMode.idVgs;
       _repeatEnabled = false;
       _voltageDropProtect = true;
       _realtimeDrainRangeAuto = true;
       _realtimeMeasureVoltage = false;
       _realtimeRunUntilStopped = false;
+      _autoSaveEnabled = false;
+      _autoSaveThermalEnabled = false;
     });
   }
 
@@ -340,6 +351,7 @@ class _PulseTesterPageState extends State<PulseTesterPage> {
       final config = _readConfig();
       setState(() {
         _logs.clear();
+        _sweepSamples.clear();
         _running = true;
         _selection.gateConnection = ConnectionStateView.connected;
         _selection.gateDetail = 'Sweep started.';
@@ -391,6 +403,10 @@ class _PulseTesterPageState extends State<PulseTesterPage> {
       _appendBridgeLogs(update.logs);
       if (!update.running && mounted) {
         _logPoller?.cancel();
+        await _loadSweepData();
+        if (_autoSaveEnabled && _autoSaveDirectoryController.text.trim().isNotEmpty) {
+          await _saveGraphBundle(autoSave: true);
+        }
         setState(() {
           _running = false;
           if (_selection.gateDetail == 'Sweep started.') {
@@ -404,6 +420,115 @@ class _PulseTesterPageState extends State<PulseTesterPage> {
   void _appendBridgeLogs(List<BridgeLog> logs) {
     for (final log in logs) {
       _log(LogEntry.fromBridge(log));
+    }
+  }
+
+  Future<void> _loadSweepData() async {
+    final result = await _bridge.fetchSweepData();
+    if (!mounted) {
+      return;
+    }
+    setState(() {
+      _sweepSamples
+        ..clear()
+        ..addAll(result.points);
+    });
+  }
+
+  bool get _hasSweepData => _sweepSamples.isNotEmpty;
+
+  String _defaultSaveDir() => Directory.current.path;
+
+  String _timeTag() {
+    final now = DateTime.now();
+    String two(int value) => value.toString().padLeft(2, '0');
+    return '${now.year}${two(now.month)}${two(now.day)}_${two(now.hour)}${two(now.minute)}${two(now.second)}';
+  }
+
+  String get _sweepModeFileTag => switch (_measurementSweepMode) {
+        MeasurementSweepMode.idVgs => 'id_vgs',
+        MeasurementSweepMode.hysteresis => 'hysteresis',
+        MeasurementSweepMode.idVds => 'id_vds',
+        MeasurementSweepMode.realtime => 'realtime',
+      };
+
+  String _graphBundleName() =>
+      '${_sweepModeFileTag}_drain_${_drainVFixed.text.trim().replaceAll('.', 'p')}_gate_${_vStart.text.trim().replaceAll('.', 'p')}_${_timeTag()}';
+
+  Future<void> _pickAutoSaveDirectory() async {
+    final selected = await _nativeChannel.invokeMethod<String>('pickDirectory', {
+      'initialDir': _autoSaveDirectoryController.text.trim().isEmpty
+          ? _defaultSaveDir()
+          : _autoSaveDirectoryController.text.trim(),
+    });
+    if (!mounted || selected == null || selected.isEmpty) {
+      return;
+    }
+    setState(() {
+      _autoSaveDirectoryController.text = selected;
+    });
+    _message('Auto-save folder: $selected');
+  }
+
+  String _buildGraphCsv() {
+    final rows = <String>[
+      'mode,index,gate_v,id_a,timestamp_ms',
+      for (var i = 0; i < _sweepSamples.length; i++)
+        '${_sweepModeFileTag},${i + 1},${_sweepSamples[i].gateVoltage},${_sweepSamples[i].drainCurrent},${_sweepSamples[i].timestampMs}',
+    ];
+    return rows.join('\n');
+  }
+
+  String _buildThermalCsv() {
+    final values = _raspberryFrameValues.map((value) => '$value').join(';');
+    return [
+      '# thermal_frame',
+      'rows,cols,values',
+      '$_raspberryFrameRows,$_raspberryFrameCols,"$values"',
+    ].join('\n');
+  }
+
+  Future<void> _saveGraphBundle({required bool autoSave}) async {
+    if (!_hasSweepData) {
+      if (!autoSave) {
+        _message('No measurement data to save.');
+      }
+      return;
+    }
+
+    final String? baseDir = autoSave
+        ? _autoSaveDirectoryController.text.trim()
+        : await _nativeChannel.invokeMethod<String>(
+            'pickDirectory',
+            {'initialDir': _defaultSaveDir()},
+          );
+    if (baseDir == null || baseDir.isEmpty) {
+      return;
+    }
+
+    final bundleDir = Directory('${baseDir}${Platform.pathSeparator}${_graphBundleName()}');
+    await bundleDir.create(recursive: true);
+    final graphFile = File('${bundleDir.path}${Platform.pathSeparator}${_sweepModeFileTag}_graph.csv');
+    await graphFile.writeAsString(_buildGraphCsv());
+
+    File? thermalFile;
+    if (_autoSaveThermalEnabled &&
+        _raspberryFrameValues.isNotEmpty &&
+        _raspberryFrameRows > 0 &&
+        _raspberryFrameCols > 0) {
+      thermalFile = File('${bundleDir.path}${Platform.pathSeparator}${_sweepModeFileTag}_thermal.csv');
+      await thermalFile.writeAsString(_buildThermalCsv());
+    }
+
+    if (!mounted) {
+      return;
+    }
+    _log(LogEntry.info('Graph CSV saved: ${graphFile.path}'));
+    if (thermalFile != null) {
+      _log(LogEntry.info('Thermal CSV saved: ${thermalFile.path}'));
+    }
+    if (!autoSave) {
+      _message('Saved in: ${bundleDir.path}');
     }
   }
 
@@ -761,16 +886,31 @@ class _PulseTesterPageState extends State<PulseTesterPage> {
               ? Row(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Expanded(child: _logCard()),
+                    Expanded(child: _graphCard()),
                     const SizedBox(width: 20),
-                    SizedBox(width: 360, child: _thermalViewCard()),
+                    SizedBox(
+                      width: 360,
+                      child: Column(
+                        children: [
+                          _thermalViewCard(),
+                          const SizedBox(height: 20),
+                          _autoSaveCard(),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(width: 20),
+                    SizedBox(width: 360, child: _logCard()),
                   ],
                 )
               : Column(
                   children: [
-                    _logCard(),
+                    _graphCard(),
                     const SizedBox(height: 20),
                     _thermalViewCard(),
+                    const SizedBox(height: 20),
+                    _logCard(),
+                    const SizedBox(height: 20),
+                    _autoSaveCard(),
                   ],
                 );
           return SingleChildScrollView(
@@ -1248,7 +1388,7 @@ class _PulseTesterPageState extends State<PulseTesterPage> {
     return ExecutionLogCard(
       running: _running,
       content: ConstrainedBox(
-        constraints: const BoxConstraints(minHeight: 88, maxHeight: 88),
+        constraints: const BoxConstraints(minHeight: 320, maxHeight: 320),
         child: _logs.isEmpty
             ? const Center(child: Text('No run history yet.'))
             : ListView.separated(
@@ -1265,6 +1405,128 @@ class _PulseTesterPageState extends State<PulseTesterPage> {
                   );
                 },
               ),
+      ),
+    );
+  }
+
+  Widget _graphCard() {
+    return Card(
+      elevation: 0,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+      child: Padding(
+        padding: const EdgeInsets.all(20),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Text('Measurement Graph', style: Theme.of(context).textTheme.titleLarge),
+                const Spacer(),
+                Text('${_sweepSamples.length} pts', style: Theme.of(context).textTheme.bodySmall),
+              ],
+            ),
+            const SizedBox(height: 12),
+            SizedBox(
+              height: 320,
+              width: double.infinity,
+              child: DecoratedBox(
+                decoration: BoxDecoration(
+                  border: Border.all(color: Colors.black26),
+                  borderRadius: BorderRadius.circular(12),
+                  color: Colors.white,
+                ),
+                child: _sweepSamples.isEmpty
+                    ? const Center(child: Text('No measurement graph yet.'))
+                    : CustomPaint(
+                        painter: SweepGraphPainter(_sweepSamples),
+                        child: const SizedBox.expand(),
+                      ),
+              ),
+            ),
+            const SizedBox(height: 12),
+            Wrap(
+              spacing: 10,
+              runSpacing: 10,
+              children: [
+                FilledButton.icon(
+                  onPressed: _hasSweepData ? () => _saveGraphBundle(autoSave: false) : null,
+                  icon: const Icon(Icons.save_alt_rounded),
+                  label: const Text('Save CSV'),
+                ),
+                OutlinedButton.icon(
+                  onPressed: _pickAutoSaveDirectory,
+                  icon: const Icon(Icons.folder_open_rounded),
+                  label: const Text('Select Folder'),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _autoSaveCard() {
+    return Card(
+      elevation: 0,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('Auto-save Settings', style: Theme.of(context).textTheme.titleMedium),
+            const SizedBox(height: 10),
+            SwitchListTile(
+              dense: true,
+              contentPadding: EdgeInsets.zero,
+              title: const Text('Auto-save graph CSV'),
+              value: _autoSaveEnabled,
+              onChanged: (value) {
+                setState(() {
+                  _autoSaveEnabled = value;
+                });
+              },
+            ),
+            SwitchListTile(
+              dense: true,
+              contentPadding: EdgeInsets.zero,
+              title: const Text('Save thermal with auto-save'),
+              value: _autoSaveThermalEnabled,
+              onChanged: (value) {
+                setState(() {
+                  _autoSaveThermalEnabled = value;
+                });
+              },
+            ),
+            const SizedBox(height: 8),
+            TextField(
+              controller: _autoSaveDirectoryController,
+              decoration: const InputDecoration(
+                labelText: 'Auto-save folder',
+                hintText: 'Select or type a folder path',
+                border: OutlineInputBorder(),
+              ),
+              onChanged: (_) => setState(() {}),
+            ),
+            const SizedBox(height: 8),
+            SizedBox(
+              width: double.infinity,
+              child: OutlinedButton.icon(
+                onPressed: _pickAutoSaveDirectory,
+                icon: const Icon(Icons.folder_open_rounded),
+                label: const Text('Browse Folder'),
+              ),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              _autoSaveDirectoryController.text.trim().isEmpty
+                  ? 'No auto-save folder selected'
+                  : _autoSaveDirectoryController.text.trim(),
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -1319,6 +1581,104 @@ class _PulseTesterPageState extends State<PulseTesterPage> {
       onChanged: (_) => setState(() {}),
     );
   }
+}
+
+class SweepGraphPainter extends CustomPainter {
+  SweepGraphPainter(this.points);
+
+  final List<SweepSample> points;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    const left = 56.0;
+    const right = 20.0;
+    const top = 20.0;
+    const bottom = 40.0;
+    final plot = Rect.fromLTWH(left, top, size.width - left - right, size.height - top - bottom);
+
+    final borderPaint = Paint()
+      ..color = Colors.black26
+      ..style = PaintingStyle.stroke;
+    canvas.drawRect(plot, borderPaint);
+
+    if (points.isEmpty) {
+      return;
+    }
+
+    double minX = points.first.gateVoltage;
+    double maxX = points.first.gateVoltage;
+    double minY = points.first.drainCurrent;
+    double maxY = points.first.drainCurrent;
+    for (final point in points) {
+      minX = math.min(minX, point.gateVoltage);
+      maxX = math.max(maxX, point.gateVoltage);
+      minY = math.min(minY, point.drainCurrent);
+      maxY = math.max(maxY, point.drainCurrent);
+    }
+    if ((maxX - minX).abs() < 1e-12) {
+      maxX = minX + 1.0;
+    }
+    if ((maxY - minY).abs() < 1e-12) {
+      maxY = minY + 1.0;
+    }
+
+    final gridPaint = Paint()
+      ..color = const Color(0xFFE5E7EB)
+      ..strokeWidth = 1;
+    for (var i = 0; i <= 4; i++) {
+      final dy = plot.top + (plot.height / 4) * i;
+      canvas.drawLine(Offset(plot.left, dy), Offset(plot.right, dy), gridPaint);
+    }
+
+    final path = Path();
+    for (var i = 0; i < points.length; i++) {
+      final point = points[i];
+      final dx = plot.left + ((point.gateVoltage - minX) / (maxX - minX)) * plot.width;
+      final dy = plot.bottom - ((point.drainCurrent - minY) / (maxY - minY)) * plot.height;
+      if (i == 0) {
+        path.moveTo(dx, dy);
+      } else {
+        path.lineTo(dx, dy);
+      }
+    }
+
+    canvas.drawPath(
+      path,
+      Paint()
+        ..color = const Color(0xFF0B6E4F)
+        ..strokeWidth = 2
+        ..style = PaintingStyle.stroke,
+    );
+
+    final dotPaint = Paint()..color = const Color(0xFFB42318);
+    for (final point in points) {
+      final dx = plot.left + ((point.gateVoltage - minX) / (maxX - minX)) * plot.width;
+      final dy = plot.bottom - ((point.drainCurrent - minY) / (maxY - minY)) * plot.height;
+      canvas.drawCircle(Offset(dx, dy), 3, dotPaint);
+    }
+
+    void drawLabel(String text, Offset offset, {TextAlign align = TextAlign.left}) {
+      final painter = TextPainter(
+        text: TextSpan(
+          text: text,
+          style: const TextStyle(fontSize: 11, color: Colors.black87),
+        ),
+        textDirection: TextDirection.ltr,
+        textAlign: align,
+      )..layout();
+      painter.paint(canvas, offset);
+    }
+
+    drawLabel('Gate Voltage (V)', Offset(plot.left + plot.width / 2 - 36, size.height - 24));
+    drawLabel('Drain Current (A)', const Offset(8, 6));
+    drawLabel(minX.toStringAsFixed(2), Offset(plot.left - 8, plot.bottom + 6));
+    drawLabel(maxX.toStringAsFixed(2), Offset(plot.right - 20, plot.bottom + 6));
+    drawLabel(maxY.toStringAsExponential(2), Offset(4, plot.top - 6));
+    drawLabel(minY.toStringAsExponential(2), Offset(4, plot.bottom - 6));
+  }
+
+  @override
+  bool shouldRepaint(covariant SweepGraphPainter oldDelegate) => oldDelegate.points != points;
 }
 
 class ThermalFramePainter extends CustomPainter {

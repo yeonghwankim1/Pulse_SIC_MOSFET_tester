@@ -215,6 +215,11 @@ class NativeInstrumentBridge {
     return LogPollResult.fromMap(response ?? const <Object?, Object?>{});
   }
 
+  Future<SweepDataResult> fetchSweepData() async {
+    final response = await _channel.invokeMapMethod<Object?, Object?>('fetchSweepData');
+    return SweepDataResult.fromMap(response ?? const <Object?, Object?>{});
+  }
+
   void dispose() {}
 }
 
@@ -255,6 +260,48 @@ class LogPollResult {
 
   final bool running;
   final List<BridgeLog> logs;
+}
+
+class SweepSample {
+  const SweepSample({
+    required this.gateVoltage,
+    required this.drainCurrent,
+    required this.timestampMs,
+  });
+
+  factory SweepSample.fromMap(Map<Object?, Object?> map) {
+    double toDouble(Object? value) {
+      if (value is num) return value.toDouble();
+      return 0.0;
+    }
+
+    return SweepSample(
+      gateVoltage: toDouble(map['gateVoltage']),
+      drainCurrent: toDouble(map['drainCurrent']),
+      timestampMs: toDouble(map['timestampMs']),
+    );
+  }
+
+  final double gateVoltage;
+  final double drainCurrent;
+  final double timestampMs;
+}
+
+class SweepDataResult {
+  const SweepDataResult({required this.points});
+
+  factory SweepDataResult.fromMap(Map<Object?, Object?> map) {
+    final rawPoints = map['points'];
+    final points = rawPoints is List<Object?>
+        ? rawPoints
+              .whereType<Map<Object?, Object?>>()
+              .map(SweepSample.fromMap)
+              .toList()
+        : const <SweepSample>[];
+    return SweepDataResult(points: points);
+  }
+
+  final List<SweepSample> points;
 }
 
 class ResourceScanResult {
