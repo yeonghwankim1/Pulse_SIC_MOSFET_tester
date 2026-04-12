@@ -14,6 +14,14 @@ class PulseTestConfig {
     required this.onTimeSeconds,
     required this.offTimeSeconds,
     required this.dutyRatio,
+    this.drainTarget,
+    this.drainTransport,
+    this.drainVoltage,
+    this.syncDrainWithGateTiming = false,
+    this.currentMeasureDelaySeconds,
+    this.currentTarget,
+    this.currentTransport,
+    this.measureDrainCurrentOnTime = false,
   });
 
   static const defaults = PulseTestConfig(
@@ -24,7 +32,7 @@ class PulseTestConfig {
     voltageEnd: 5.0,
     voltageStep: 0.1,
     onTimeSeconds: 2.0,
-    offTimeSeconds: 0.01,
+    offTimeSeconds: 1.0,
     dutyRatio: 0.5,
   );
 
@@ -37,6 +45,14 @@ class PulseTestConfig {
   final double onTimeSeconds;
   final double offTimeSeconds;
   final double dutyRatio;
+  final String? drainTarget;
+  final CommTransport? drainTransport;
+  final double? drainVoltage;
+  final bool syncDrainWithGateTiming;
+  final double? currentMeasureDelaySeconds;
+  final String? currentTarget;
+  final CommTransport? currentTransport;
+  final bool measureDrainCurrentOnTime;
 
   double get frequencyHz => 1000000.0 / periodUs;
   double get dutyPercent => dutyRatio * 100.0;
@@ -51,6 +67,10 @@ class PulseTestConfig {
     }
     if (onTimeSeconds < 0 || offTimeSeconds < 0) {
       throw const ValidationException('On/Off time cannot be negative.');
+    }
+    if (currentMeasureDelaySeconds != null &&
+        currentMeasureDelaySeconds! > onTimeSeconds) {
+      throw const ValidationException('Current measure delay cannot exceed On-Time.');
     }
     if (dutyRatio <= 0 || dutyRatio >= 1) {
       throw const ValidationException('Duty ratio must be between 0 and 1.');
@@ -107,6 +127,22 @@ class NativeInstrumentBridge {
     return ResourceScanResult.fromMap(response ?? const <Object?, Object?>{});
   }
 
+  Future<RaspberryFrameResult> receiveRaspberryFrame({
+    required String host,
+    required int port,
+    required int timeoutMs,
+  }) async {
+    final response = await _channel.invokeMapMethod<Object?, Object?>(
+      'receiveRaspberryFrame',
+      <String, Object?>{
+        'host': host,
+        'port': port,
+        'timeoutMs': timeoutMs,
+      },
+    );
+    return RaspberryFrameResult.fromMap(response ?? const <Object?, Object?>{});
+  }
+
   // 선택한 transport/target으로 연결 확인용 핸드셰이크를 수행한다.
   Future<BridgeResult> identify({
     required String target,
@@ -136,6 +172,19 @@ class NativeInstrumentBridge {
         'onTimeSeconds': config.onTimeSeconds,
         'offTimeSeconds': config.offTimeSeconds,
         'dutyRatio': config.dutyRatio,
+        if (config.drainTarget != null && config.drainTarget!.isNotEmpty)
+          'drainTarget': config.drainTarget,
+        if (config.drainTransport != null)
+          'drainTransportType': config.drainTransport!.nativeValue,
+        if (config.drainVoltage != null) 'drainVoltage': config.drainVoltage,
+        'syncDrainWithGateTiming': config.syncDrainWithGateTiming,
+        if (config.currentMeasureDelaySeconds != null)
+          'currentMeasureDelaySeconds': config.currentMeasureDelaySeconds,
+        if (config.currentTarget != null && config.currentTarget!.isNotEmpty)
+          'currentTarget': config.currentTarget,
+        if (config.currentTransport != null)
+          'currentTransportType': config.currentTransport!.nativeValue,
+        'measureDrainCurrentOnTime': config.measureDrainCurrentOnTime,
       },
     );
     return BridgeResult.fromMap(response ?? const <Object?, Object?>{});
@@ -229,6 +278,63 @@ class ResourceScanResult {
   final List<String> resources;
   final Map<String, String> resourceToName;
   final String error;
+}
+
+class RaspberryFrameResult {
+  const RaspberryFrameResult({
+    required this.remoteAddress,
+    required this.remotePort,
+    required this.debugStatus,
+    required this.timeStr,
+    required this.frameId,
+    required this.rows,
+    required this.cols,
+    required this.payloadBytes,
+    required this.valueCount,
+    required this.minValue,
+    required this.maxValue,
+    required this.meanValue,
+    required this.centerValue,
+    required this.values,
+  });
+
+  factory RaspberryFrameResult.fromMap(Map<Object?, Object?> map) {
+    final rawValues = map['values'];
+    final values = rawValues is List<Object?>
+        ? rawValues.map((item) => (item as num).toDouble()).toList()
+        : const <double>[];
+    return RaspberryFrameResult(
+      remoteAddress: (map['remoteAddress'] ?? '').toString(),
+      remotePort: (map['remotePort'] as num?)?.toInt() ?? 0,
+      debugStatus: (map['debugStatus'] ?? '').toString(),
+      timeStr: (map['timeStr'] ?? '').toString(),
+      frameId: (map['frameId'] ?? '').toString(),
+      rows: (map['rows'] as num?)?.toInt() ?? 0,
+      cols: (map['cols'] as num?)?.toInt() ?? 0,
+      payloadBytes: (map['payloadBytes'] as num?)?.toInt() ?? 0,
+      valueCount: (map['valueCount'] as num?)?.toInt() ?? 0,
+      minValue: (map['min'] as num?)?.toDouble() ?? 0,
+      maxValue: (map['max'] as num?)?.toDouble() ?? 0,
+      meanValue: (map['mean'] as num?)?.toDouble() ?? 0,
+      centerValue: (map['center'] as num?)?.toDouble() ?? 0,
+      values: values,
+    );
+  }
+
+  final String remoteAddress;
+  final int remotePort;
+  final String debugStatus;
+  final String timeStr;
+  final String frameId;
+  final int rows;
+  final int cols;
+  final int payloadBytes;
+  final int valueCount;
+  final double minValue;
+  final double maxValue;
+  final double meanValue;
+  final double centerValue;
+  final List<double> values;
 }
 
 // 네이티브 계층에서 올라온 개별 로그 한 줄이다.

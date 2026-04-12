@@ -235,13 +235,23 @@ class SweepSetupCard extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text('Sweep Setup', style: Theme.of(context).textTheme.headlineSmall),
-            const SizedBox(height: 8),
-            Text(description, style: Theme.of(context).textTheme.bodyMedium),
-            const SizedBox(height: 8),
-            Text(selectedInstrumentLabel, style: Theme.of(context).textTheme.bodySmall),
-            const SizedBox(height: 20),
-            Wrap(spacing: 16, runSpacing: 16, children: fields),
+            if (description.isNotEmpty) ...[
+              Text(description, style: Theme.of(context).textTheme.bodyMedium),
+              const SizedBox(height: 8),
+            ],
+            if (selectedInstrumentLabel.isNotEmpty) ...[
+              Text(selectedInstrumentLabel, style: Theme.of(context).textTheme.bodySmall),
+              const SizedBox(height: 12),
+            ],
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                for (var i = 0; i < fields.length; i++) ...[
+                  fields[i],
+                  if (i != fields.length - 1) const SizedBox(height: 16),
+                ],
+              ],
+            ),
             const SizedBox(height: 20),
             Wrap(spacing: 12, runSpacing: 12, children: actions),
             if (warningText != null) ...[
@@ -284,6 +294,139 @@ class ExecutionLogCard extends StatelessWidget {
             ),
             const SizedBox(height: 16),
             content,
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class ThermalCameraConfigCard extends StatelessWidget {
+  const ThermalCameraConfigCard({
+    super.key,
+    required this.enabled,
+    required this.busy,
+    required this.leadingFields,
+    required this.hostField,
+    required this.portField,
+    required this.onEnabledChanged,
+    required this.onToggleStream,
+    required this.streaming,
+    this.footer,
+  });
+
+  final bool enabled;
+  final bool busy;
+  final List<Widget> leadingFields;
+  final Widget hostField;
+  final Widget portField;
+  final ValueChanged<bool> onEnabledChanged;
+  final VoidCallback onToggleStream;
+  final bool streaming;
+  final Widget? footer;
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      elevation: 0,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('Thermal Camera', style: Theme.of(context).textTheme.titleLarge),
+            const SizedBox(height: 8),
+            Text(
+              'Configure the Raspberry Pi thermal stream using the same host/port pattern.',
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
+            const SizedBox(height: 12),
+            Wrap(
+              spacing: 10,
+              runSpacing: 10,
+              crossAxisAlignment: WrapCrossAlignment.center,
+              children: [
+                SizedBox(
+                  width: 170,
+                  child: SwitchListTile(
+                    dense: true,
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text('Enable'),
+                    value: enabled,
+                    onChanged: busy && !streaming ? null : onEnabledChanged,
+                  ),
+                ),
+                ...leadingFields,
+                SizedBox(width: 220, child: hostField),
+                SizedBox(width: 120, child: portField),
+                SizedBox(
+                  width: 150,
+                  height: 40,
+                  child: FilledButton(
+                    onPressed: enabled && (!busy || streaming) ? onToggleStream : null,
+                    child: Text(streaming ? 'Stop Camera' : 'Start Camera'),
+                  ),
+                ),
+              ],
+            ),
+            if (footer != null) ...[
+              const SizedBox(height: 10),
+              footer!,
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class ThermalPreviewCard extends StatelessWidget {
+  const ThermalPreviewCard({
+    super.key,
+    required this.streaming,
+    required this.infoText,
+    required this.preview,
+  });
+
+  final bool streaming;
+  final String infoText;
+  final Widget preview;
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      elevation: 0,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Text('Thermal View', style: Theme.of(context).textTheme.titleLarge),
+                const Spacer(),
+                if (streaming) const Chip(label: Text('Live')),
+              ],
+            ),
+            const SizedBox(height: 10),
+            SizedBox(height: 250, child: preview),
+            const SizedBox(height: 10),
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(10),
+              decoration: BoxDecoration(
+                color: const Color(0xFFF6F8FA),
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: const Color(0xFFD0D7DE)),
+              ),
+              child: SelectableText(
+                infoText,
+                maxLines: 4,
+                style: const TextStyle(fontFamily: 'monospace', fontSize: 11),
+              ),
+            ),
           ],
         ),
       ),

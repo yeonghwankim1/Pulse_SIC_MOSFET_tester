@@ -8,7 +8,8 @@ void main() {
     expect(find.text('SiC MOSFET Pulse Tester'), findsOneWidget);
     expect(find.text('Instrument Selection'), findsOneWidget);
     expect(find.text('GW Instek AFG-2225'), findsOneWidget);
-    expect(find.text('Sweep Setup'), findsOneWidget);
+    expect(find.text('Transport'), findsOneWidget);
+    expect(find.text('Measurement Setting'), findsOneWidget);
     expect(find.text('Start Sweep'), findsOneWidget);
     expect(find.text('Windows C++'), findsOneWidget);
     expect(find.text('Execution Log'), findsOneWidget);

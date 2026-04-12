@@ -175,8 +175,19 @@ std::string QueryVisaIdn(const std::string& resource, int timeout_ms = 3000) {
   }
   return std::string(reinterpret_cast<char*>(buffer), read);
 }
-void SetOutput(IScpiTransport& transport, bool enabled) {
+void SetGeneratorOutput(IScpiTransport& transport, bool enabled) {
   transport.WriteLine(enabled ? "OUTP1 ON" : "OUTP1 OFF");
+}
+
+void SetSourceMeterOutput(IScpiTransport& transport, bool enabled) {
+  transport.WriteLine(enabled ? "OUTP ON" : "OUTP OFF");
+}
+
+void SetDcVoltage(IScpiTransport& transport, double voltage) {
+  transport.WriteLine("*CLS");
+  transport.WriteLine("SYST:REM");
+  transport.WriteLine("SOUR:FUNC VOLT");
+  transport.WriteLine("SOUR:VOLT " + FormatDouble(voltage, 6));
 }
 
 void SetSquareWave(IScpiTransport& transport, double frequency, double vpp,
@@ -304,11 +315,33 @@ flutter::EncodableValue InstrumentController::StartSweep(
   }
 
   SweepConfig config = {
-      GetString(arguments, "transportType"),  GetString(arguments, "target"),
-      GetDouble(arguments, "periodUs"),       GetDouble(arguments, "voltageStart"),
-      GetDouble(arguments, "voltageEnd"),     GetDouble(arguments, "voltageStep"),
-      GetDouble(arguments, "onTimeSeconds"),  GetDouble(arguments, "offTimeSeconds"),
+      GetString(arguments, "transportType"),
+      GetString(arguments, "target"),
+      HasString(arguments, "drainTransportType")
+          ? GetString(arguments, "drainTransportType")
+          : "",
+      HasString(arguments, "drainTarget") ? GetString(arguments, "drainTarget") : "",
+      HasString(arguments, "currentTransportType")
+          ? GetString(arguments, "currentTransportType")
+          : "",
+      HasString(arguments, "currentTarget") ? GetString(arguments, "currentTarget") : "",
+      GetDouble(arguments, "periodUs"),
+      GetDouble(arguments, "voltageStart"),
+      GetDouble(arguments, "voltageEnd"),
+      GetDouble(arguments, "voltageStep"),
+      HasDouble(arguments, "drainVoltage") ? GetDouble(arguments, "drainVoltage") : 0.0,
+      GetDouble(arguments, "onTimeSeconds"),
+      GetDouble(arguments, "offTimeSeconds"),
       GetDouble(arguments, "dutyRatio"),
+      HasDouble(arguments, "currentMeasureDelaySeconds")
+          ? GetDouble(arguments, "currentMeasureDelaySeconds")
+          : 0.05,
+      HasBool(arguments, "syncDrainWithGateTiming")
+          ? GetBool(arguments, "syncDrainWithGateTiming")
+          : false,
+      HasBool(arguments, "measureDrainCurrentOnTime")
+          ? GetBool(arguments, "measureDrainCurrentOnTime")
+          : false,
   };
 
   {
@@ -401,6 +434,18 @@ void InstrumentController::RunResourceScan() {
 void InstrumentController::RunSweep(SweepConfig config) {
   try {
     auto transport = CreateScpiTransport(config.transport_type, config.target);
+    std::unique_ptr<IScpiTransport> drain_transport;
+    if (config.sync_drain_with_gate_timing && !config.drain_target.empty() &&
+        !config.drain_transport_type.empty()) {
+      drain_transport =
+          CreateScpiTransport(config.drain_transport_type, config.drain_target);
+    }
+    std::unique_ptr<IScpiTransport> current_transport;
+    if (config.measure_drain_current_on_time && !config.current_target.empty() &&
+        !config.current_transport_type.empty()) {
+      current_transport =
+          CreateScpiTransport(config.current_transport_type, config.current_target);
+    }
     const std::string idn = transport->Identify();
     const double frequency = PeriodUsToFrequency(config.period_us);
     const double duty_percent = config.duty_ratio * 100.0;
@@ -412,6 +457,12 @@ void InstrumentController::RunSweep(SweepConfig config) {
     AddLog("info", "Period: " + FormatDouble(config.period_us, 3) + " us");
     AddLog("info", "Frequency: " + FormatDouble(frequency, 3) + " Hz");
     AddLog("info", "Duty: " + FormatDouble(duty_percent, 2) + " %");
+    if (drain_transport != nullptr) {
+      SetDcVoltage(*drain_transport, config.drain_voltage);
+      SetSourceMeterOutput(*drain_transport, false);
+      AddLog("info", "Drain timing follows Gate Setting On/Off using " +
+                         drain_transport->DisplayTarget());
+    }
 
     for (size_t index = 0; index < points.size(); ++index) {
       if (stop_requested_) {
@@ -419,7 +470,10 @@ void InstrumentController::RunSweep(SweepConfig config) {
         break;
       }
 
-      SetOutput(*transport, false);
+      SetGeneratorOutput(*transport, false);
+      if (drain_transport != nullptr) {
+        SetSourceMeterOutput(*drain_transport, false);
+      }
       if (SleepWithStopCheck(config.off_time)) {
         AddLog("warning", "Stop requested during off-time.");
         break;
@@ -428,18 +482,55 @@ void InstrumentController::RunSweep(SweepConfig config) {
       const double vpp = points[index];
       const double offset = vpp / 2.0;
       SetSquareWave(*transport, frequency, vpp, offset, duty_percent);
-      SetOutput(*transport, true);
+      SetGeneratorOutput(*transport, true);
+      if (drain_transport != nullptr) {
+        SetDcVoltage(*drain_transport, config.drain_voltage);
+        SetSourceMeterOutput(*drain_transport, true);
+      }
       AddLog("info", "Step " + std::to_string(index + 1) + ": Vpp=" +
                          FormatDouble(vpp, 2) + " V, Offset=" +
                          FormatDouble(offset, 2) + " V");
+
+      if (current_transport != nullptr) {
+        const double settle_seconds =
+            std::min(std::max(config.current_measure_delay_seconds, 0.0), config.on_time);
+        if (SleepWithStopCheck(settle_seconds)) {
+          AddLog("warning", "Stop requested before on-time current measurement.");
+          break;
+        }
+        try {
+          const std::string current_reading = QueryCurrentOnTime(*current_transport);
+          AddLog("info", "Drain current during on-time: " + current_reading);
+        } catch (const std::exception& error) {
+          AddLog("warning", std::string("Drain current read failed during on-time: ") +
+                                error.what());
+        }
+        const double remaining_on_time = std::max(config.on_time - settle_seconds, 0.0);
+        if (SleepWithStopCheck(remaining_on_time)) {
+          AddLog("warning", "Stop requested during on-time.");
+          break;
+        }
+        SetGeneratorOutput(*transport, false);
+        if (drain_transport != nullptr) {
+          SetSourceMeterOutput(*drain_transport, false);
+        }
+        continue;
+      }
 
       if (SleepWithStopCheck(config.on_time)) {
         AddLog("warning", "Stop requested during on-time.");
         break;
       }
+      SetGeneratorOutput(*transport, false);
+      if (drain_transport != nullptr) {
+        SetSourceMeterOutput(*drain_transport, false);
+      }
     }
 
-    SetOutput(*transport, false);
+    SetGeneratorOutput(*transport, false);
+    if (drain_transport != nullptr) {
+      SetSourceMeterOutput(*drain_transport, false);
+    }
     AddLog("info", "Output stopped.");
   } catch (const std::exception& error) {
     AddLog("error", std::string("Transport Error: ") + error.what());
@@ -459,6 +550,20 @@ bool InstrumentController::SleepWithStopCheck(double seconds) {
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
   }
   return stop_requested_;
+}
+
+std::string InstrumentController::QueryCurrentOnTime(IScpiTransport& transport) {
+  transport.WriteLine("MEAS:CURR?");
+  auto response = transport.ReadLine();
+  if (!response.empty()) {
+    return response;
+  }
+  transport.WriteLine("READ?");
+  response = transport.ReadLine();
+  if (response.empty()) {
+    throw std::runtime_error("Empty current response.");
+  }
+  return response;
 }
 
 flutter::EncodableMap InstrumentController::BuildResult(bool success,
@@ -494,4 +599,37 @@ double InstrumentController::GetDouble(const flutter::EncodableMap& arguments,
     return *double_value;
   }
   throw std::runtime_error(std::string("Invalid numeric argument: ") + key);
+}
+
+bool InstrumentController::GetBool(const flutter::EncodableMap& arguments,
+                                   const char* key) {
+  const auto it = arguments.find(EncodableValue(key));
+  if (it == arguments.end()) {
+    throw std::runtime_error(std::string("Missing argument: ") + key);
+  }
+  if (const auto* bool_value = std::get_if<bool>(&(it->second))) {
+    return *bool_value;
+  }
+  throw std::runtime_error(std::string("Invalid boolean argument: ") + key);
+}
+
+bool InstrumentController::HasString(const flutter::EncodableMap& arguments,
+                                     const char* key) {
+  const auto it = arguments.find(EncodableValue(key));
+  return it != arguments.end() && std::holds_alternative<std::string>(it->second);
+}
+
+bool InstrumentController::HasBool(const flutter::EncodableMap& arguments,
+                                   const char* key) {
+  const auto it = arguments.find(EncodableValue(key));
+  return it != arguments.end() && std::holds_alternative<bool>(it->second);
+}
+
+bool InstrumentController::HasDouble(const flutter::EncodableMap& arguments,
+                                     const char* key) {
+  const auto it = arguments.find(EncodableValue(key));
+  return it != arguments.end() &&
+         (std::holds_alternative<int32_t>(it->second) ||
+          std::holds_alternative<int64_t>(it->second) ||
+          std::holds_alternative<double>(it->second));
 }

@@ -30,13 +30,21 @@ class InstrumentController {
   struct SweepConfig {
     std::string transport_type;
     std::string target;
+    std::string drain_transport_type;
+    std::string drain_target;
+    std::string current_transport_type;
+    std::string current_target;
     double period_us;
     double voltage_start;
     double voltage_end;
     double voltage_step;
+    double drain_voltage;
     double on_time;
     double off_time;
     double duty_ratio;
+    double current_measure_delay_seconds = 0.05;
+    bool sync_drain_with_gate_timing = false;
+    bool measure_drain_current_on_time = false;
   };
 
   std::atomic<bool> running_;
@@ -55,9 +63,14 @@ class InstrumentController {
   void RunResourceScan();
   void RunSweep(SweepConfig config);
   bool SleepWithStopCheck(double seconds);
+  std::string QueryCurrentOnTime(IScpiTransport& transport);
   flutter::EncodableMap BuildResult(bool success, const std::string& summary);
   static std::string GetString(const flutter::EncodableMap& arguments, const char* key);
   static double GetDouble(const flutter::EncodableMap& arguments, const char* key);
+  static bool GetBool(const flutter::EncodableMap& arguments, const char* key);
+  static bool HasString(const flutter::EncodableMap& arguments, const char* key);
+  static bool HasBool(const flutter::EncodableMap& arguments, const char* key);
+  static bool HasDouble(const flutter::EncodableMap& arguments, const char* key);
 };
 
 #endif

@@ -9,6 +9,7 @@ project(runner LANGUAGES CXX)
 add_executable(${BINARY_NAME} WIN32
   "flutter_window.cpp"
   "instrument_controller.cpp"
+  "raspberry_receiver.cpp"
   "scpi_transport_factory.cpp"
   "serial_scpi_transport.cpp"
   "tcp_scpi_transport.cpp"

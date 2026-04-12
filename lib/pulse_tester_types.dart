@@ -20,6 +20,16 @@ enum GateMeasurementMode {
   final String label;
 }
 
+enum MeasurementSweepMode {
+  idVgs('Id-Vgs'),
+  hysteresis('Hysteresis'),
+  idVds('Id-Vds'),
+  realtime('Real-time');
+
+  const MeasurementSweepMode(this.label);
+  final String label;
+}
+
 enum PulseDeviceRole {
   generator('Function Generator'),
   oscilloscope('Oscilloscope'),
